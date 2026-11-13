@@ -7,14 +7,19 @@ if(!process.env.TEST_DATABASE_URL)throw Error('Set TEST_DATABASE_URL to an isola
 const film=(Id,Name)=>({Id,Name,Type:'Movie',ProductionYear:2020,RunTimeTicks:60000000000,Genres:['Comedy'],People:[],UserData:{Played:false},ImageTags:{}});
 const catalogs={alice:[film('shared','Shared'),film('alice-only','Alice private'),film('alice-liked','Liked')],bob:[film('shared','Shared'),film('bob-only','Bob private')],charlie:[]};
 let destination;
+const devices=new Map(),validTokens=new Set();
 const fake=createServer(async(req,res)=>{
  const url=new URL(req.url,'http://fake');let user=(req.headers.authorization||'').match(/Token="([^"]+)"/)?.[1];
  if(url.pathname==='/Users/AuthenticateByName'){
   let raw='';for await(const c of req)raw+=c;const b=JSON.parse(raw);
   if(!catalogs[b.Username]||b.Pw!=='test-password'){res.writeHead(401);return res.end('{}');}
+  const device=(req.headers.authorization||'').match(/DeviceId="([^"]+)"/)?.[1];
+  assert.ok(device,'Authentication must identify a device');
+  if(devices.has(device))validTokens.delete(devices.get(device));
+  devices.set(device,b.Username);validTokens.add(b.Username);
   return res.end(JSON.stringify({AccessToken:b.Username,User:{Id:b.Username,Name:b.Username}}));
  }
- if(!catalogs[user]){res.writeHead(401);return res.end('{}');}
+ if(!catalogs[user]||!validTokens.has(user)){res.writeHead(401);return res.end('{}');}
  if(url.pathname==='/Items')return res.end(JSON.stringify({Items:catalogs[user],TotalRecordCount:catalogs[user].length}));
  const id=url.pathname.split('/').at(-1),item=catalogs[user].find(m=>m.Id===id);
  if(!item){res.writeHead(404);return res.end('{}');}
@@ -34,6 +39,7 @@ try{
  assert.equal((await call('login',null,{username:'alice',password:'test-password'},'http://evil.invalid')).status,403);
  assert.equal((await call('login',null,{username:'alice',password:'wrong'})).status,401);
  const alice=await login('alice'),bob=await login('bob'),charlie=await login('charlie');
+ assert.equal(devices.size,3,'Each user must authenticate as an independent Jellyfin device');
  assert.equal((await (await call('library',alice)).json()).movies.length,3);
  assert.equal((await call('rate',alice,{id:'alice-liked',value:3})).status,200);
  assert.equal((await call('rate',alice,{id:'alice-liked',value:999})).status,400);
@@ -50,5 +56,5 @@ try{
  assert.equal((await call('rate',alice,{id:'alice-liked',value:null})).status,200);
  assert.equal((await call('logout',alice,{})).status,200);
  assert.equal((await call('me',alice)).status,401);
- console.log('PASS: login, CSRF, authorization, persistent ratings, isolation, room consent, intersection, snooze, undo and logout');
+ console.log('PASS: independent Jellyfin sessions, login, CSRF, authorization, persistent ratings, isolation, room consent, intersection, snooze, undo and logout');
 }catch(e){console.error(output);throw e;}finally{child.kill('SIGTERM');await new Promise(r=>fake.close(r));}

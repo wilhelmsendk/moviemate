@@ -120,7 +120,10 @@ async function handle(req:NextRequest) {
       const otherId=room.host_id===s.user_id?room.guest_id:room.host_id;
       const other=await pool.query('SELECT s.token,p.name FROM sessions s JOIN profiles p ON p.id=s.user_id WHERE user_id=$1 AND expires>now() ORDER BY expires DESC LIMIT 1',[otherId]);
       if (!other.rows[0]) return json({waiting:true});
-      const [myMovies,theirMovies,myState,theirState]=await Promise.all([library(s.user_id,s.token),library(otherId,other.rows[0].token),state(s.user_id),state(otherId)]);
+      const [myMovies,theirMovies,myState,theirState]=await Promise.all([library(s.user_id,s.token),library(otherId,other.rows[0].token).catch(e=>{
+        if(e instanceof JellyfinError && e.status===401) throw new HttpError(409,'Din filmmakker skal logge ind igen. Dine egne forbindelsesoplysninger er stadig gyldige.');
+        throw e;
+      }),state(s.user_id),state(otherId)]);
       // Both users must have access; watched/rated/dismissed titles are excluded separately.
       const a=recommend(myMovies,myState.ratings,0,myState.excluded,myMovies.length);
       const b=recommend(theirMovies,theirState.ratings,0,theirState.excluded,theirMovies.length);

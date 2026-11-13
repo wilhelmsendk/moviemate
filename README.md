@@ -2,7 +2,7 @@
 
 **Less scrolling. Better movie nights.** A mobile-first, self-hosted companion for the films already on your Jellyfin server.
 
-MovieMate is an early **0.1 alpha**, not a finished product. The interface is currently Danish. It does not download media, modify film files, change Jellyfin ratings, or claim that similarity scores are probabilities.
+MovieMate is an early **0.1.1 alpha**, not a finished product. The interface is currently Danish. It does not download media, modify film files, change Jellyfin ratings, or claim that similarity scores are probabilities.
 
 ## What works in this version
 
@@ -142,3 +142,13 @@ A backup is not verified until a restore has been tested on a separate instance.
 Contributions are welcome. Open an issue before a large change, keep secrets and real viewing data out of fixtures, and include tests for changes to access control or recommendation behavior.
 
 AGPL-3.0-only. See [LICENSE](LICENSE). MovieMate is independent of Jellyfin and Moonfin and is not affiliated with them.
+
+## 0.1.1 fixes
+
+- Each Jellyfin sign-in uses a unique device ID so partners do not replace each other's device sessions.
+- Full-library pair ranking reuses precomputed feature vectors and avoids doing diversity ordering for every film; solo diversity selection is incremental.
+- Pair polling never overlaps and pauses when the Together screen is not open.
+- An expired partner token is reported as a partner sign-in problem rather than invalidating the viewer's own session.
+- Regression coverage includes 500-film pair ranking and a Jellyfin simulator that invalidates sessions when a device ID is reused.
+
+After upgrading from 0.1.0, both partners should log out of MovieMate and log back in to obtain independent Jellyfin sessions. Existing ratings are retained.

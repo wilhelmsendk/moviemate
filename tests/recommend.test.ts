@@ -31,3 +31,15 @@ test('history without ratings is a weak positive signal, not claimed as an expli
  const r=recommend([movie('seen','Comedy',{played:true}),movie('comedy','Comedy'),movie('horror','Horror')],[]);
  assert.equal(r[0].id,'comedy');assert.match(r[0].reason,/historik/);
 });
+test('two full-sized libraries can be ranked together without blocking the server',()=>{
+ const library=Array.from({length:500},(_,i)=>movie(`film-${i}`,['Comedy','Drama','Action','Adventure'][i%4],{
+   people:[{id:`director-${i%20}`,name:'Director',type:'Director'},...Array.from({length:5},(_,j)=>({id:`actor-${(i+j)%70}`,name:'Actor',type:'Actor'}))],
+   played:i<100
+ }));
+ const ratings=library.slice(0,30).map((m,i)=>({item_id:m.id,value:i%4===0?-2:3}));
+ const started=performance.now();
+ const a=recommend(library,ratings,0,[],library.length),b=recommend(library,ratings,0,[],library.length);
+ const result=pairRank(a,b);
+ assert.equal(result.length,400);
+ assert.ok(performance.now()-started<2500,'Pair ranking blocked for more than 2.5 seconds');
+});

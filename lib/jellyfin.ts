@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Movie } from './types';
 export function serverUrl() {
   const url = new URL(process.env.JELLYFIN_URL || 'http://host.docker.internal:8096');
@@ -6,7 +7,11 @@ export function serverUrl() {
 }
 export async function jelly(path: string, token?: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
-  headers.set('Authorization', `MediaBrowser Client="MovieMate", Device="MovieMate", DeviceId="moviemate-server", Version="0.1.0"${token ? `, Token="${token.replace(/["\r\n]/g,'')}"` : ''}`);
+  // Jellyfin can replace a device's session when another user signs in.
+  // Every authentication gets its own device; later calls identify that session by token.
+  headers.set('Authorization', token
+    ? `MediaBrowser Token="${token.replace(/["\r\n]/g,'')}"`
+    : `MediaBrowser Client="MovieMate", Device="MovieMate", DeviceId="moviemate-${randomUUID()}", Version="0.1.1"`);
   if (init.body) headers.set('Content-Type','application/json');
   const res = await fetch(`${serverUrl()}${path}`, { ...init, headers, cache: 'no-store', signal: AbortSignal.timeout(20000), redirect: 'error' });
   if (!res.ok) throw new JellyfinError(res.status);
