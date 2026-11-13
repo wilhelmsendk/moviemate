@@ -1,0 +1,28 @@
+{
+  "name": "moviemate",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --hostname 0.0.0.0",
+    "build": "next build",
+    "start": "next start --hostname 0.0.0.0",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "typecheck": "next typegen && tsc --noEmit",
+    "test:integration": "node tests/integration.mjs"
+  },
+  "dependencies": {
+    "next": "16.4.6",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "pg": "8.16.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "tsx": "^4.20.6",
+    "@types/node": "^24.10.0",
+    "@types/pg": "^8.15.6",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2"
+  },
+  "license": "AGPL-3.0-only"
+}
