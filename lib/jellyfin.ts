@@ -1,7 +1,12 @@
 import { randomUUID, createHash } from 'node:crypto';
 import type { Movie } from './types';
-import { createAsyncCache } from './cache';
-const libraryCache=createAsyncCache<Movie[]>(30000);
+import { createSnapshotCache } from './snapshot-cache';
+import { pool,ready } from './db';
+const libraryCache=createSnapshotCache<Movie[],{userId:string;token:string}>({
+ async read(key){await ready();const r=await pool.query('SELECT movies,updated FROM library_snapshots WHERE cache_key=$1',[key]);return r.rows[0]?{value:r.rows[0].movies,updated:new Date(r.rows[0].updated).getTime()}:null;},
+ async write(key,snapshot){const userId=JSON.parse(key)[1];await pool.query('INSERT INTO library_snapshots(cache_key,user_id,movies,updated) VALUES($1,$2,$3,$4) ON CONFLICT(cache_key) DO UPDATE SET movies=excluded.movies,updated=excluded.updated',[key,userId,JSON.stringify(snapshot.value),new Date(snapshot.updated)]);},
+ load:(_key,context)=>fetchLibrary(context.userId,context.token)
+});
 
 export function serverUrl() {
   const url = new URL(process.env.JELLYFIN_URL || 'http://host.docker.internal:8096');
@@ -14,16 +19,16 @@ export async function jelly(path: string, token?: string, init: RequestInit = {}
   // Every authentication gets its own device; later calls identify that session by token.
   headers.set('Authorization', token
     ? `MediaBrowser Token="${token.replace(/["\r\n]/g,'')}"`
-    : `MediaBrowser Client="MovieMate", Device="MovieMate", DeviceId="moviemate-${randomUUID()}", Version="0.1.3"`);
+    : `MediaBrowser Client="MovieMate", Device="MovieMate", DeviceId="moviemate-${randomUUID()}", Version="0.1.4"`);
   if (init.body) headers.set('Content-Type','application/json');
   const res = await fetch(`${serverUrl()}${path}`, { ...init, headers, cache: 'no-store', signal: AbortSignal.timeout(20000), redirect: 'error' });
   if (!res.ok) throw new JellyfinError(res.status);
   return res;
 }
 export class JellyfinError extends Error { constructor(public status: number) { super(`Jellyfin svarede ${status}`); } }
-export function library(userId:string,token:string):Promise<Movie[]> {
-  const key=createHash('sha256').update(`${serverUrl()}\0${userId}\0${token}`).digest('hex');
-  return libraryCache.get(key,()=>fetchLibrary(userId,token));
+export function library(userId:string,token:string,force=false):Promise<Movie[]> {
+  const key=JSON.stringify([createHash('sha256').update(serverUrl()).digest('hex'),userId]);
+  return force?libraryCache.refresh(key,{userId,token}):libraryCache.get(key,{userId,token});
 }
 async function fetchLibrary(userId: string, token: string): Promise<Movie[]> {
   const items: Movie[] = [];

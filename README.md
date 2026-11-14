@@ -2,7 +2,7 @@
 
 **Less scrolling. Better movie nights.** A mobile-first, self-hosted companion for the films already on your Jellyfin server.
 
-MovieMate is an early **0.1.3 alpha**, not a finished product. The interface is currently Danish. It does not download media, modify film files, change Jellyfin ratings, or claim that similarity scores are probabilities.
+MovieMate is an early **0.1.4 alpha**, not a finished product. The interface is currently Danish. It does not download media, modify film files, change Jellyfin ratings, or claim that similarity scores are probabilities.
 
 ## What works in this version
 
@@ -53,7 +53,7 @@ Repository access is currently controlled by its owner; if the repository is pri
 3. Open **Sammen**, create an invitation code, and ask your partner to sign into MovieMate with their own Jellyfin profile on another phone/browser and enter it.
 4. Open the chosen film yourself in Moonfin/Jellyfin on the TV. **Remote playback is not implemented in 0.1.**
 
-Two people using one shared Jellyfin account do not yet have separate MovieMate taste profiles. Sessions expire after seven days. Invitations expire after two hours. Library metadata is fetched on demand, coalesced for concurrent requests and cached in memory for 30 seconds per user/token (bounded to 24 sessions). It is not a persistent background mirror. Library access changes may take up to 30 seconds to reach this metadata cache; poster requests still check Jellyfin access directly. Ratings are read separately from PostgreSQL.
+Two people using one shared Jellyfin account do not yet have separate MovieMate taste profiles. Sessions expire after seven days. Invitations expire after two hours. MovieMate stores permission-scoped library snapshots in PostgreSQL and keeps up to 24 in memory. After the first sync for each user, navigation, inbox and shared choices reuse these snapshots, including after an app restart. Snapshots older than five minutes are refreshed in the background; once ten minutes old, a successful refresh is required. Access changes can therefore take up to ten minutes to reach cached MovieMate views and sharing checks. Jellyfin remains the authority for actual playback. Use **Min bruger → Synkroniser bibliotek** to refresh immediately. Ratings are read separately from PostgreSQL.
 
 ### Phone installation
 
@@ -177,3 +177,13 @@ To recommend a film to another MovieMate user on the **same configured Jellyfin 
 Sending checks that the film is accessible to both accounts. The recipient must have a non-expired MovieMate/Jellyfin session. The inbox hides films no longer visible to the recipient (subject to the existing 30-second metadata-cache window). Only the recipient can mark a recommendation read. Duplicate recommendations to the same person for the same film within a day are rejected; a basic per-sender daily limit of 20 applies.
 
 The update adds a profile preference and a recommendation table automatically, without deleting existing ratings or accounts. Take a database backup before updating as usual.
+
+## 0.1.4 shared decisions and local library snapshots
+
+- Each person can approve or undo a proposal using **Den vil jeg se**. When both approve the same film, a row-locked database transaction confirms **Aftenens film** for both people. This is a saved decision, not a local toast, and does not start TV playback.
+- A confirmed choice stays fixed until a participant explicitly chooses **Vælg en anden film**. Room revisions prevent an older polling response from clearing a newer decision.
+- The room and inbox poll every two seconds while their screen is open and the page is visible. This is short polling, not push delivery; background tabs do not keep polling.
+- PostgreSQL library snapshots survive app restarts. Initial sync is still required once per Jellyfin user. Five-minute-old data refreshes in the background; ten-minute-old data must refresh before it can be used. Manual sync is available in user settings.
+- Pair rankings are cached separately from live votes. Poster thumbnails reuse a bounded per-user/session memory cache (128 images, at most 2 MB per image) and no longer request the same item metadata before every image. The library snapshot checks access; cache-based access changes can take up to ten minutes to appear.
+- Slow API requests over 1.5 seconds are logged by operation category and duration, without room codes, usernames, messages or tokens.
+- Tests cover persisted snapshots across a server restart, nonblocking background refresh, failure backoff, independent libraries, both clients observing the confirmed film, simultaneous approvals, unauthorized voters and reset.

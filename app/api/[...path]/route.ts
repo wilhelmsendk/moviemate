@@ -2,11 +2,14 @@ import { randomBytes, createHash } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { pool, ready } from '@/lib/db';
 import { jelly, library, mapMovie, JellyfinError } from '@/lib/jellyfin';
+import { createAsyncCache } from '@/lib/cache';
 import { recommend, pairRank } from '@/lib/recommend';
 import type { Rating } from '@/lib/types';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 const hash = (s: string) => createHash('sha256').update(s).digest('hex');
+const pairCache=createAsyncCache<ReturnType<typeof pairRank>>(60000,48);
+const posterCache=createAsyncCache<{bytes:Uint8Array;type:string}>(600000,128);
 const failures = new Map<string,{n:number;until:number}>();
 class HttpError extends Error { constructor(public status:number,message:string) { super(message); } }
 const json = (data:unknown,status=200) => NextResponse.json(data,{status,headers:{'Cache-Control':'no-store'}});
@@ -31,6 +34,7 @@ async function state(userId:string) {
   return {ratings:r.rows,excluded:d.rows.map(x=>x.item_id)};
 }
 async function handle(req:NextRequest) {
+  const started=performance.now();
   try {
     if (req.method==='POST') {
       const origin=req.headers.get('origin');
@@ -116,6 +120,9 @@ async function handle(req:NextRequest) {
       await pool.query('UPDATE recommendations SET read_at=now() WHERE id=$1 AND recipient_id=$2',[b.id,s.user_id]);
       return json({ok:true});
     }
+    if(path==='library/refresh'&&req.method==='POST'){
+      const movies=await library(s.user_id,s.token,true);return json({count:movies.length});
+    }
     if (path==='library' && req.method==='GET') {
       const [movies,own]=await Promise.all([library(s.user_id,s.token),state(s.user_id)]);
       return json({movies:movies.map(m=>({...m,rated:own.ratings.find(r=>r.item_id===m.id)?.value})),ratingCount:own.ratings.length});
@@ -142,9 +149,15 @@ async function handle(req:NextRequest) {
     if (path.startsWith('image/') && req.method==='GET') {
       const id=path.split('/')[1];
       if (!/^[a-zA-Z0-9-]{1,80}$/.test(id)) throw new HttpError(400,'Ugyldigt billede');
-      await jelly(`/Users/${s.user_id}/Items/${id}`,s.token);
-      const upstream=await jelly(`/Items/${id}/Images/Primary?maxWidth=600&quality=85`,s.token);
-      return new NextResponse(upstream.body,{headers:{'Content-Type':upstream.headers.get('content-type') || 'image/jpeg','Cache-Control':'private, max-age=3600'}});
+      if(!(await library(s.user_id,s.token)).some(m=>m.id===id))throw new HttpError(403,'Billedet er ikke tilgængeligt');
+      const image=await posterCache.get(hash(`${s.user_id}:${s.token}:${id}`),async()=>{
+        const upstream=await jelly(`/Items/${id}/Images/Primary?maxWidth=600&quality=85`,s.token);
+        const type=upstream.headers.get('content-type')||'';
+        if(!type.startsWith('image/')||Number(upstream.headers.get('content-length')||0)>2000000)throw new HttpError(502,'Ugyldigt plakatbillede');
+        const bytes=new Uint8Array(await upstream.arrayBuffer());if(bytes.length>2000000)throw new HttpError(502,'Plakaten er for stor');
+        return {bytes,type};
+      });
+      return new NextResponse(Buffer.from(image.bytes),{headers:{'Content-Type':image.type,'Cache-Control':'private, max-age=3600'}});
     }
     if (path==='rooms' && req.method==='POST') {
       const code=randomBytes(6).toString('hex').toUpperCase();
@@ -157,6 +170,40 @@ async function handle(req:NextRequest) {
       const r=await pool.query('UPDATE rooms SET guest_id=$1 WHERE code=$2 AND expires>now() AND host_id<>$1 AND (guest_id IS NULL OR guest_id=$1) RETURNING code',[s.user_id,code]);
       if (!r.rows.length) throw new HttpError(404,'Koden er udløbet, optaget eller din egen');
       return json({code});
+    }
+    if(/^rooms\/[^/]+\/(vote|reset)$/.test(path)&&req.method==='POST'){
+      const [,code,action]=path.split('/'),b=await body(req);
+      const membership=await pool.query('SELECT * FROM rooms WHERE code=$1 AND expires>now() AND (host_id=$2 OR guest_id=$2)',[code,s.user_id]);
+      const room=membership.rows[0];if(!room||!room.guest_id)throw new HttpError(404,'Filmaftenen er ikke klar');
+      let movie;
+      if(action==='vote'){
+        if(typeof b.itemId!=='string'||typeof b.approved!=='boolean')throw new HttpError(400,'Ugyldigt filmvalg');
+        const otherId=room.host_id===s.user_id?room.guest_id:room.host_id;
+        const other=await pool.query('SELECT token FROM sessions WHERE user_id=$1 AND expires>now() ORDER BY expires DESC LIMIT 1',[otherId]);
+        if(!other.rows[0])throw new HttpError(409,'Din filmmakker skal logge ind igen');
+        const [mine,theirs]=await Promise.all([library(s.user_id,s.token),library(otherId,other.rows[0].token)]);
+        movie=mine.find(m=>m.id===b.itemId);
+        if(!movie||!theirs.some(m=>m.id===b.itemId))throw new HttpError(403,'Filmen er ikke tilgængelig for jer begge');
+      }
+      const client=await pool.connect();let selected=null,version=0;
+      try{
+        await client.query('BEGIN');
+        const locked=await client.query('SELECT * FROM rooms WHERE code=$1 AND expires>now() AND (host_id=$2 OR guest_id=$2) FOR UPDATE',[code,s.user_id]);
+        if(!locked.rows[0])throw new HttpError(404,'Filmaftenen er udløbet');
+        if(action==='reset'){
+          await client.query('DELETE FROM room_votes WHERE code=$1',[code]);
+          await client.query('UPDATE rooms SET selected_item_id=NULL,selected_at=NULL WHERE code=$1',[code]);
+        }else{
+          if(locked.rows[0].selected_item_id)throw new HttpError(409,'I har allerede valgt en film. Vælg en anden for at starte forfra.');
+          if(b.approved)await client.query('INSERT INTO room_votes(code,user_id,item_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[code,s.user_id,b.itemId]);
+          else await client.query('DELETE FROM room_votes WHERE code=$1 AND user_id=$2 AND item_id=$3',[code,s.user_id,b.itemId]);
+          const votes=await client.query('SELECT user_id FROM room_votes WHERE code=$1 AND item_id=$2 AND user_id=ANY($3::text[])',[code,b.itemId,[room.host_id,room.guest_id]]);
+          if(votes.rowCount===2){await client.query('UPDATE rooms SET selected_item_id=$1,selected_at=now() WHERE code=$2',[b.itemId,code]);selected=movie;}
+        }
+        const revision=await client.query('UPDATE rooms SET revision=revision+1 WHERE code=$1 RETURNING revision',[code]);version=Number(revision.rows[0].revision);
+        await client.query('COMMIT');
+      }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+      return json({ok:true,selected,version});
     }
     if (path.startsWith('rooms/') && req.method==='GET') {
       const code=path.split('/')[1];
@@ -171,9 +218,12 @@ async function handle(req:NextRequest) {
         throw e;
       }),state(s.user_id),state(otherId)]);
       // Both users must have access; watched/rated/dismissed titles are excluded separately.
-      const a=recommend(myMovies,myState.ratings,0,myState.excluded,myMovies.length);
-      const b=recommend(theirMovies,theirState.ratings,0,theirState.excluded,theirMovies.length);
-      return json({waiting:false,name:other.rows[0].name,movies:pairRank(a,b).slice(0,5)});
+      const key=hash(JSON.stringify([code,s.user_id,myMovies.map(m=>[m.id,m.played,m.favorite]),theirMovies.map(m=>[m.id,m.played,m.favorite]),myState,theirState]));
+      const movies=await pairCache.get(key,async()=>pairRank(recommend(myMovies,myState.ratings,0,myState.excluded,myMovies.length),recommend(theirMovies,theirState.ratings,0,theirState.excluded,theirMovies.length)).slice(0,5));
+      const voted=await pool.query('SELECT item_id,user_id FROM room_votes WHERE code=$1',[code]);
+      const votes=[...new Set<string>(voted.rows.map(v=>v.item_id))].map(itemId=>({itemId,mine:voted.rows.some(v=>v.item_id===itemId&&v.user_id===s.user_id),partner:voted.rows.some(v=>v.item_id===itemId&&v.user_id===otherId)}));
+      const selected=room.selected_item_id?myMovies.find(m=>m.id===room.selected_item_id&&theirMovies.some(t=>t.id===m.id))||null:null;
+      return json({waiting:false,name:other.rows[0].name,movies,votes,selected,version:Number(room.revision)});
     }
     throw new HttpError(404,'Siden findes ikke');
   } catch(e) {
@@ -182,6 +232,9 @@ async function handle(req:NextRequest) {
     // Never log request bodies, passwords, connection strings or Jellyfin tokens.
     console.error('MovieMate request failed:',e instanceof Error?e.name:'unknown');
     return json({error:'Forbindelsen kunne ikke gennemføres. Kontrollér Jellyfin og databasen.'},503);
+  } finally {
+    const duration=performance.now()-started;
+    if(duration>1500)console.warn(`[MovieMate slow] ${req.method} ${req.nextUrl.pathname.split('/')[2]||'api'} ${Math.round(duration)}ms`);
   }
 }
 export {handle as GET,handle as POST};

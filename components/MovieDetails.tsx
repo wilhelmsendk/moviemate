@@ -3,9 +3,9 @@ import {useEffect,useState} from 'react';
 import type {Movie} from '../lib/types';
 type DetailedMovie=Movie&{rated?:number;reason?:string};
 export type DetailMode='details'|'rating'|'share';
-export default function MovieDetails({movie,initialMode,saving,onRate,onClose,onProfile,onSelected}:{
+export default function MovieDetails({movie,initialMode,saving,onRate,onClose,onProfile,onSelected,selectLabel}:{
  movie:DetailedMovie;initialMode:DetailMode;saving:boolean;
- onRate:(id:string,value:number|null)=>void;onClose:()=>void;onProfile:()=>void;onSelected:(title:string)=>void;
+ onRate:(id:string,value:number|null)=>void;onClose:()=>void;onProfile:()=>void;onSelected:(title:string)=>void;selectLabel?:string;
 }){
  const [mode,setMode]=useState<DetailMode>(initialMode),[full,setFull]=useState<DetailedMovie>(movie);
  const [loading,setLoading]=useState(true),[notice,setNotice]=useState('');
@@ -44,7 +44,7 @@ export default function MovieDetails({movie,initialMode,saving,onRate,onClose,on
   <div className="detail-top"><div className="poster">{full.imageTag?<img src={`/api/image/${full.id}`} alt={`Plakat: ${full.title}`}/>:<span className="placeholder">{full.title}</span>}</div><div><span className="eyebrow">{mode==='rating'?'DIN BEDØMMELSE':mode==='share'?'EN FILM TIL EN VEN':'FRA DIT JELLYFIN-BIBLIOTEK'}</span><h2>{full.title}</h2><p>{full.year||'År ukendt'} · {full.minutes?`${full.minutes} min`:'Spilletid ukendt'}</p><p>{full.genres.join(' · ')}</p></div></div>
   {mode==='details'&&<><div className="movie-description"><h3>Om filmen</h3><p>{full.overview||'Der er endnu ingen beskrivelse af filmen i Jellyfin.'}</p></div>
    {full.reason&&<p className="detail-reason">✦ {full.reason}</p>}
-   <div className="detail-actions"><button className="primary" onClick={()=>onSelected(full.title)}>Det bliver den her ✓</button><button className="secondary" onClick={()=>setMode('share')}>Del med bruger ↗</button><button className="secondary" onClick={()=>setMode('rating')}>Bedøm filmen</button></div>
+   <div className="detail-actions"><button className="primary" onClick={()=>onSelected(full.title)}>{selectLabel||'Det bliver den her ✓'}</button><button className="secondary" onClick={()=>setMode('share')}>Del med bruger ↗</button><button className="secondary" onClick={()=>setMode('rating')}>Bedøm filmen</button></div>
    {(full.trailers||[]).length>0&&<div className="trailer-links">{full.trailers!.slice(0,2).map(t=><a className="secondary" href={t.url} key={t.url} target="_blank" rel="noopener noreferrer">▶ {t.name} ↗</a>)}</div>}
    {loading&&<p className="quiet" role="status">Henter flere filmdetaljer…</p>}{notice&&<p className="quiet">{notice}</p>}
    <dl className="movie-facts">{directors.length>0&&<><dt>Instruktør</dt><dd>{directors.map(p=>p.name).join(', ')}</dd></>}{cast.length>0&&<><dt>Medvirkende</dt><dd>{cast.map(p=>p.name).join(', ')}</dd></>}{full.audio.length>0&&<><dt>Lydsprog</dt><dd>{[...new Set(full.audio.map(language))].join(' · ')}</dd></>}</dl>

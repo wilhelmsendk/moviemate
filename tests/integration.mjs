@@ -28,7 +28,7 @@ const fake=createServer(async(req,res)=>{
 await new Promise(r=>fake.listen(0,'127.0.0.1',r));
 destination=`http://127.0.0.1:${fake.address().port}`;
 const port=process.env.TEST_PORT||'33219',base=`http://127.0.0.1:${port}`;
-const child=spawn(process.execPath,['node_modules/next/dist/bin/next','start','--hostname','127.0.0.1','--port',port],{env:{...process.env,DATABASE_URL:process.env.TEST_DATABASE_URL,JELLYFIN_URL:destination},stdio:['ignore','pipe','pipe']});
+let child=spawn(process.execPath,['node_modules/next/dist/bin/next','start','--hostname','127.0.0.1','--port',port],{env:{...process.env,DATABASE_URL:process.env.TEST_DATABASE_URL,JELLYFIN_URL:destination},stdio:['ignore','pipe','pipe']});
 let output='';child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>output+=b);
 async function call(path,cookie,body,origin=base){return fetch(`${base}/api/${path}`,{method:body===undefined?'GET':'POST',headers:{...(cookie?{cookie}:{}),...(body!==undefined?{'Content-Type':'application/json',Origin:origin}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});}
 async function login(username){const r=await call('login',null,{username,password:'test-password'});assert.equal(r.status,200,await r.clone().text());assert.ok(!JSON.stringify(await r.json()).includes('test-password'));return r.headers.get('set-cookie').split(';')[0];}
@@ -46,11 +46,32 @@ try{
  assert.notEqual((await call('rate',bob,{id:'alice-only',value:3})).status,200);
  const own=await (await call('library',alice)).json();assert.equal(own.movies.find(m=>m.id==='alice-liked').rated,3);
  const other=await (await call('library',bob)).json();assert.ok(other.movies.every(m=>m.rated===undefined));
+ const exit=new Promise(resolve=>child.once('exit',resolve));child.kill('SIGTERM');await exit;
+ child=spawn(process.execPath,['node_modules/next/dist/bin/next','start','--hostname','127.0.0.1','--port',port],{env:{...process.env,DATABASE_URL:process.env.TEST_DATABASE_URL,JELLYFIN_URL:destination},stdio:['ignore','pipe','pipe']});
+ child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>output+=b);
+ let restarted=false;for(let i=0;i<100;i++){try{if((await call('health')).ok){restarted=true;break;}}catch{}await delay(100);}
+ assert.ok(restarted,output);
+ assert.equal((await(await call('library',alice)).json()).movies.length,3);
+ assert.equal(libraryReads.get('alice'),1,'Restart must reuse persisted library rather than fetch Jellyfin');
  const code=(await (await call('rooms',alice,{})).json()).code;
  assert.equal((await call(`rooms/${code}`,charlie)).status,404);
  assert.equal((await call('rooms/join',bob,{code})).status,200);
  assert.equal((await call('rooms/join',charlie,{code})).status,404);
  const pair=await (await call(`rooms/${code}`,alice)).json();assert.deepEqual(pair.movies.map(m=>m.id),['shared']);
+ assert.equal((await call(`rooms/${code}/vote`,charlie,{itemId:'shared',approved:true})).status,404);
+ assert.equal((await call(`rooms/${code}/vote`,alice,{itemId:'alice-only',approved:true})).status,403);
+ assert.equal((await call(`rooms/${code}/vote`,alice,{itemId:'shared',approved:true})).status,200);
+ let view=await(await call(`rooms/${code}`,bob)).json();assert.equal(view.selected,null);assert.deepEqual(view.votes,[{itemId:'shared',mine:false,partner:true}]);
+ const agreed=await call(`rooms/${code}/vote`,bob,{itemId:'shared',approved:true});assert.equal(agreed.status,200);assert.equal((await agreed.json()).selected.id,'shared');
+ view=await(await call(`rooms/${code}`,alice)).json();assert.equal(view.selected.id,'shared');
+ assert.equal((await call(`rooms/${code}/vote`,alice,{itemId:'shared',approved:false})).status,409);
+ assert.equal((await call(`rooms/${code}/reset`,charlie,{})).status,404);
+ assert.equal((await call(`rooms/${code}/reset`,bob,{})).status,200);
+ view=await(await call(`rooms/${code}`,alice)).json();assert.equal(view.selected,null);assert.deepEqual(view.votes,[]);
+ const simultaneous=await Promise.all([call(`rooms/${code}/vote`,alice,{itemId:'shared',approved:true}),call(`rooms/${code}/vote`,bob,{itemId:'shared',approved:true})]);
+ assert.ok(simultaneous.every(r=>r.status===200),'Concurrent approvals must serialize safely');
+ const mutual=await(await call(`rooms/${code}`,bob)).json();assert.equal(mutual.selected.id,'shared');assert.ok(mutual.version>view.version);
+ await call(`rooms/${code}/reset`,alice,{});
  assert.equal((await call('dismiss',alice,{id:'shared'})).status,200);
  assert.ok(!(await (await call('recommendations',alice)).json()).movies.some(m=>m.id==='shared'));
  assert.equal((await call('rate',alice,{id:'alice-liked',value:null})).status,200);
@@ -75,5 +96,5 @@ try{
  assert.notEqual((await call('movie/alice-only',bob)).status,200);
  assert.equal((await call('logout',alice,{})).status,200);
  assert.equal((await call('me',alice)).status,401);
- console.log('PASS: opt-in sharing, recipient access, private inbox, film details, per-session metadata reuse, independent Jellyfin sessions, login, CSRF, authorization, persistent ratings, isolation, room consent, intersection, snooze, undo and logout');
+ console.log('PASS: persistent library across restart, mutual film selection and reset, opt-in sharing, recipient access, private inbox, film details, per-session metadata reuse, independent Jellyfin sessions, login, CSRF, authorization, persistent ratings, isolation, room consent, intersection, snooze, undo and logout');
 }catch(e){console.error(output);throw e;}finally{child.kill('SIGTERM');await new Promise(r=>fake.close(r));}
