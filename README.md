@@ -211,3 +211,11 @@ MovieMate offers a rating card after observing at least 85% playback followed by
 Under your profile, upload an IMDb ratings CSV, a Letterboxd ratings/diary CSV, or a Netflix viewing-activity CSV. Preview the matches, deselect entries, then confirm. IMDb provider IDs are preferred; otherwise MovieMate requires an exact normalized title and, where supplied, matching year. Ambiguous and missing films are skipped. This first version imports only titles present in your accessible library; external films need metadata enrichment in a later version. No uploaded CSV is retained.
 
 IMDb 9–10 and Letterboxd 4.5–5 become favourites; IMDb 6–8 and Letterboxd 3–4 become liked; lower ratings become not-for-me. Viewing history without a rating is only a weak watched signal and excludes the film from unseen recommendations. Existing MovieMate ratings are never overwritten. All changes remain in MovieMate and do not change Jellyfin. Maximum file size 2 MB and 10,000 rows per import.
+
+### 0.1.8 — keep browsing fast when Jellyfin is slow
+
+Persisted library snapshots now remain immediately readable after ten minutes and across restarts. Stale data refreshes in the background, with the existing retry backoff and single-flight protection. Only the first import into an empty MovieMate database or an explicit library sync waits for a complete fetch. When Jellyfin is unavailable, previously cached metadata may be out of date until the next successful refresh.
+
+The bulk library request no longer asks Jellyfin for every film's media streams; audio details still load when opening a film. Playback/review session requests share a short per-user/token cache and stop waiting after three seconds. Client polling is cancelled when leaving a view and has a seven-second upper bound. In-flight cached requests remain coalesced even when they take longer than the cache TTL. Explicit playback commands still validate against fresh device permissions. API JSON responses expose a Server-Timing duration for troubleshooting.
+
+Regression coverage includes a day-old persisted library with a deliberately stalled Jellyfin response: library and recommendations must respond within 1.5 seconds without waiting for the refresh.

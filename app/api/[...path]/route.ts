@@ -41,7 +41,7 @@ async function handle(req:NextRequest) {
   const language=resolveLanguage(req.headers.get('accept-language'));
   const json=(data:any,status=200)=>{
     if(data?.error)data={...data,error:translate(data.error,language)};
-    return NextResponse.json(data,{status,headers:{'Cache-Control':'no-store'}});
+    return NextResponse.json(data,{status,headers:{'Cache-Control':'no-store','Server-Timing':`app;dur=${Math.round(performance.now()-started)}`}});
   };
   try {
     if (req.method==='POST') {
@@ -103,7 +103,7 @@ async function handle(req:NextRequest) {
       if(typeof b.itemId!=='string'||typeof b.sessionId!=='string')throw new HttpError(400,'Ugyldig film');
       const movie=await(await jelly(`/Users/${encodeURIComponent(s.user_id)}/Items/${encodeURIComponent(b.itemId)}`,s.token)).json();
       if(movie.Type!=='Movie')throw new HttpError(403,'Filmen er ikke tilgængelig for dig');
-      const targets=await playbackSessions(s.user_id,s.token);
+      const targets=await playbackSessions(s.user_id,s.token,true);
       if(!targets.some(d=>d.Id===b.sessionId))throw new HttpError(403,'Enheden er ikke tilgængelig for fjernstyring');
       await jelly(`/Sessions/${encodeURIComponent(b.sessionId)}/Playing?${new URLSearchParams({playCommand:'PlayNow',itemIds:b.itemId,startPositionTicks:'0'})}`,s.token,{method:'POST'});
       return json({accepted:true});

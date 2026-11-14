@@ -5,6 +5,8 @@ import { pool,ready } from './db';
 const libraryCache=createSnapshotCache<Movie[],{userId:string;token:string}>({
  async read(key){await ready();const r=await pool.query('SELECT movies,updated FROM library_snapshots WHERE cache_key=$1',[key]);return r.rows[0]?{value:r.rows[0].movies,updated:new Date(r.rows[0].updated).getTime()}:null;},
  async write(key,snapshot){const userId=JSON.parse(key)[1];await pool.query('INSERT INTO library_snapshots(cache_key,user_id,movies,updated) VALUES($1,$2,$3,$4) ON CONFLICT(cache_key) DO UPDATE SET movies=excluded.movies,updated=excluded.updated',[key,userId,JSON.stringify(snapshot.value),new Date(snapshot.updated)]);},
+ // Existing snapshots remain usable while a slow/offline Jellyfin refreshes in the background.
+ hardTtl:Infinity,
  load:(_key,context)=>fetchLibrary(context.userId,context.token)
 });
 
@@ -13,15 +15,15 @@ export function serverUrl() {
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Ugyldig JELLYFIN_URL');
   return url.toString().replace(/\/$/, '');
 }
-export async function jelly(path: string, token?: string, init: RequestInit = {}) {
+export async function jelly(path: string, token?: string, init: RequestInit = {}, timeoutMs=20000) {
   const headers = new Headers(init.headers);
   // Jellyfin can replace a device's session when another user signs in.
   // Every authentication gets its own device; later calls identify that session by token.
   headers.set('Authorization', token
     ? `MediaBrowser Token="${token.replace(/["\r\n]/g,'')}"`
-    : `MediaBrowser Client="MovieMate", Device="MovieMate", DeviceId="moviemate-${randomUUID()}", Version="0.1.7"`);
+    : `MediaBrowser Client="MovieMate", Device="MovieMate", DeviceId="moviemate-${randomUUID()}", Version="0.1.8"`);
   if (init.body) headers.set('Content-Type','application/json');
-  const res = await fetch(`${serverUrl()}${path}`, { ...init, headers, cache: 'no-store', signal: AbortSignal.timeout(20000), redirect: 'error' });
+  const res = await fetch(`${serverUrl()}${path}`, { ...init, headers, cache: 'no-store', signal: AbortSignal.timeout(timeoutMs), redirect: 'error' });
   if (!res.ok) throw new JellyfinError(res.status);
   return res;
 }
@@ -33,7 +35,7 @@ export function library(userId:string,token:string,force=false):Promise<Movie[]>
 async function fetchLibrary(userId: string, token: string): Promise<Movie[]> {
   const items: Movie[] = [];
   for (let start = 0; ; start += 500) {
-    const query = new URLSearchParams({ userId, includeItemTypes:'Movie', recursive:'true', fields:'Genres,People,Overview,MediaStreams,ProviderIds', enableUserData:'true', startIndex:String(start), limit:'500' });
+    const query = new URLSearchParams({ userId, includeItemTypes:'Movie', recursive:'true', fields:'Genres,People,Overview,ProviderIds', enableUserData:'true', startIndex:String(start), limit:'500' });
     const data = await (await jelly(`/Items?${query}`,token)).json();
     for (const m of data.Items || []) items.push(mapMovie(m));
     if (!data.Items?.length || items.length >= (data.TotalRecordCount ?? items.length)) break;

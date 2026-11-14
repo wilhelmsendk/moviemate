@@ -7,7 +7,8 @@ import {setTimeout as delay} from 'node:timers/promises';
 if(!process.env.TEST_DATABASE_URL)throw Error('Set TEST_DATABASE_URL to an isolated test database');
 const film=(Id,Name)=>({Id,Name,Type:'Movie',ProductionYear:2020,RunTimeTicks:60000000000,Genres:['Comedy'],People:[],UserData:{Played:false},ImageTags:{}});
 const catalogs={alice:[film('shared','Shared'),film('alice-only','Alice private'),film('alice-liked','Liked')],bob:[film('shared','Shared'),film('bob-only','Bob private')],charlie:[]};
-let destination,playing=false,paused=false,playCommands=0,position=0;
+let destination,playing=false,paused=false,playCommands=0,position=0,holdLibrary=false,releaseLibrary;
+const libraryGate=new Promise(resolve=>{releaseLibrary=resolve;});
 const devices=new Map(),validTokens=new Set(),libraryReads=new Map();
 const fake=createServer(async(req,res)=>{
  const url=new URL(req.url,'http://fake');let user=(req.headers.authorization||'').match(/Token="([^"]+)"/)?.[1];
@@ -28,7 +29,7 @@ const fake=createServer(async(req,res)=>{
  if(url.pathname.startsWith('/Sessions/')&&req.method==='POST'){
   assert.equal(url.pathname,`/Sessions/tv-${user}/Playing`);assert.equal(url.searchParams.get('playCommand'),'PlayNow');assert.equal(url.searchParams.get('itemIds'),'shared');playCommands++;res.writeHead(204);return res.end();
  }
- if(url.pathname==='/Items'){libraryReads.set(user,(libraryReads.get(user)||0)+1);return res.end(JSON.stringify({Items:catalogs[user],TotalRecordCount:catalogs[user].length}));}
+ if(url.pathname==='/Items'){if(holdLibrary&&user==='alice')await libraryGate;libraryReads.set(user,(libraryReads.get(user)||0)+1);return res.end(JSON.stringify({Items:catalogs[user],TotalRecordCount:catalogs[user].length}));}
  const id=url.pathname.split('/').at(-1),item=catalogs[user].find(m=>m.Id===id);
  if(!item){res.writeHead(404);return res.end('{}');}
  return res.end(JSON.stringify(item));
@@ -54,9 +55,9 @@ try{
  assert.equal(playCommands,0);
  assert.equal((await call('playback/start',alice,{itemId:'shared',sessionId:'tv-alice'})).status,200);
  assert.equal((await(await call('playback?itemId=shared',alice)).json()).status,'idle','Accepted commands must not imply playback');
- playing=true;
+ playing=true;await delay(1100);
  assert.equal((await(await call('playback?itemId=shared',alice)).json()).status,'playing');
- paused=true;assert.equal((await(await call('playback?itemId=shared',alice)).json()).status,'paused');paused=false;
+ paused=true;await delay(1100);assert.equal((await(await call('playback?itemId=shared',alice)).json()).status,'paused');paused=false;
  assert.equal((await call('playback?itemId=alice-only',bob)).status,403);
  assert.equal(devices.size,3,'Each user must authenticate as an independent Jellyfin device');
  assert.equal((await (await call('library',alice)).json()).movies.length,3);
@@ -96,14 +97,14 @@ try{
  assert.equal((await(await call(`playback?itemId=shared&code=${code}`,bob)).json()).status,'playing','Partners can see confirmed playback of their chosen film');
  assert.equal((await(await call('playback?itemId=shared&code=invalid',bob)).json()).status,'idle');
  // Stopping early must not trigger a rating prompt.
- playing=false;
+ playing=false;await delay(1100);
  await call('playback?itemId=shared',alice);
  assert.deepEqual((await(await call('reviews',alice)).json()).movies,[]);
- playing=true;position=60000000000*.9;
+ playing=true;position=60000000000*.9;await delay(1100);
  await call(`playback?itemId=shared&code=${code}`,alice);
  await call(`playback?itemId=shared&code=${code}`,bob);
  // Both participants can reopen after the film ends: reviews reconciles persisted progress.
- playing=false;
+ playing=false;await delay(1100);
  assert.equal((await(await call('reviews',alice)).json()).movies[0].id,'shared');
  assert.equal((await(await call('reviews',bob)).json()).movies[0].id,'shared');
  await call('reviews/dismiss',charlie,{itemId:'shared'});
@@ -158,7 +159,21 @@ try{
  assert.ok((await(await call('inbox',bob)).json()).messages[0].read_at);
  assert.equal((await(await call('movie/shared',bob)).json()).movie.title,'Shared');
  assert.notEqual((await call('movie/alice-only',bob)).status,200);
+ // A day-old snapshot must remain fast even while Jellyfin never returns a library refresh.
+ const staleDb=new Client({connectionString:process.env.TEST_DATABASE_URL});await staleDb.connect();
+ try{await staleDb.query("UPDATE library_snapshots SET updated=now()-interval '1 day' WHERE user_id='alice'");}finally{await staleDb.end();}
+ const stopped=new Promise(resolve=>child.once('exit',resolve));child.kill('SIGTERM');await stopped;
+ holdLibrary=true;
+ child=spawn(process.execPath,['node_modules/next/dist/bin/next','start','--hostname','127.0.0.1','--port',port],{env:{...process.env,DATABASE_URL:process.env.TEST_DATABASE_URL,JELLYFIN_URL:destination},stdio:['ignore','pipe','pipe']});
+ child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>output+=b);
+ for(let i=0;i<100;i++){try{if((await call('health')).ok)break;}catch{}await delay(100);}
+ const fast=await Promise.race([call('library',alice),delay(1500).then(()=>null)]);
+ assert.ok(fast,'Day-old persisted movies must not wait for a stalled Jellyfin refresh');assert.equal(fast.status,200);
+ assert.equal((await fast.json()).movies.length,3);
+ const fastPicks=await Promise.race([call('recommendations',alice),delay(1500).then(()=>null)]);
+ assert.ok(fastPicks,'Recommendations must reuse the same stale snapshot without waiting');assert.equal(fastPicks.status,200);
+ releaseLibrary();holdLibrary=false;
  assert.equal((await call('logout',alice,{})).status,200);
  assert.equal((await call('me',alice)).status,401);
  console.log('PASS: selected home film, expired-room finish, stale/unauthorized finish rejection, persistent library across restart, mutual film selection and reset, opt-in sharing, recipient access, private inbox, film details, per-session metadata reuse, independent Jellyfin sessions, login, CSRF, authorization, persistent ratings, isolation, room consent, intersection, snooze, undo and logout');
-}catch(e){console.error(output);throw e;}finally{child.kill('SIGTERM');await new Promise(r=>fake.close(r));}
+}catch(e){console.error(output);throw e;}finally{releaseLibrary();child.kill('SIGTERM');await new Promise(r=>fake.close(r));}

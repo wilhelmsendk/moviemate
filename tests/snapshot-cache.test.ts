@@ -27,3 +27,10 @@ test('background refresh failures retain a recent snapshot without retrying ever
  await new Promise(r=>setImmediate(r));now=200;
  assert.equal(await cache.get('alice','token'),3);assert.equal(loads,1);
 });
+test('library mode serves a day-old persisted snapshot immediately while a slow refresh is pending',async()=>{
+ let loads=0,finish!:(n:number)=>void;
+ const cache=createSnapshotCache<number,string>({hardTtl:Infinity,read:async()=>({value:42,updated:Date.now()-86400000}),write:async()=>{},load:async()=>{loads++;return new Promise<number>(resolve=>{finish=resolve;});}});
+ assert.equal(await Promise.race([cache.get('alice','token'),new Promise(resolve=>setTimeout(()=>resolve('blocked'),100))]),42);
+ assert.equal(loads,1);assert.equal(await cache.get('alice','token'),42);assert.equal(loads,1);
+ finish(43);await cache.refresh('alice','token');assert.equal(await cache.get('alice','token'),43);
+});

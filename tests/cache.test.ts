@@ -20,3 +20,11 @@ test('bounds memory and evicts old sessions',async()=>{
  await cache.get('a',async()=>++calls);await cache.get('b',async()=>++calls);
  assert.equal(await cache.get('a',async()=>++calls),3);
 });
+test('slow in-flight requests remain coalesced after the result TTL passes',async()=>{
+ let now=0,calls=0,finish!:(value:number)=>void;const cache=createAsyncCache<number>(1000,4,()=>now);
+ const load=()=>{calls++;return new Promise<number>(resolve=>{finish=resolve;});};
+ const first=cache.get('alice',load);await Promise.resolve();now=5000;
+ const second=cache.get('alice',load);await Promise.resolve();assert.equal(calls,1);
+ finish(9);assert.deepEqual(await Promise.all([first,second]),[9,9]);
+ assert.equal(await cache.get('alice',load),9);
+});
