@@ -219,3 +219,9 @@ Persisted library snapshots now remain immediately readable after ten minutes an
 The bulk library request no longer asks Jellyfin for every film's media streams; audio details still load when opening a film. Playback/review session requests share a short per-user/token cache and stop waiting after three seconds. Client polling is cancelled when leaving a view and has a seven-second upper bound. In-flight cached requests remain coalesced even when they take longer than the cache TTL. Explicit playback commands still validate against fresh device permissions. API JSON responses expose a Server-Timing duration for troubleshooting.
 
 Regression coverage includes a day-old persisted library with a deliberately stalled Jellyfin response: library and recommendations must respond within 1.5 seconds without waiting for the refresh.
+
+### 0.1.9 — library filters and sorting
+
+The library and My Taste views now support combined genre, title-search, watched/unwatched and Danish filters. Sort by title, production year or runtime; unknown years/runtimes sort last. A result count and reset button make it easy to return to the full library. Common Danish/English genre labels are grouped together and displayed in the selected UI language. Imported viewing history also counts as watched in the library.
+
+“Danish films” uses Jellyfin's production-country metadata. “Danish audio” uses Jellyfin's audio-language filter, so a dubbed foreign film can appear there without being a Danish production. Missing metadata can leave titles out. These two indexes are loaded only when selected, persisted per user/server, and refreshed in the background. The default library remains independent of those requests; local genre/search/sort changes never reload it or fetch every film's media streams.

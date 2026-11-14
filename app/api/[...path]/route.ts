@@ -1,3 +1,4 @@
+import {libraryFacet} from '@/lib/library-facets';
 import {importRows,previewImport} from '@/lib/import-history';
 import {playbackSessions,playbackStatus} from '@/lib/playback';
 import {resolveLanguage,translate} from '@/lib/i18n';
@@ -221,12 +222,19 @@ async function handle(req:NextRequest) {
       await pool.query('UPDATE recommendations SET read_at=now() WHERE id=$1 AND recipient_id=$2',[b.id,s.user_id]);
       return json({ok:true});
     }
+    if(path.startsWith('library/facets/')&&req.method==='GET'){
+      const facet=path.split('/')[2];
+      if(facet!=='danish-origin'&&facet!=='danish-audio')throw new HttpError(400,'Ugyldig indstilling');
+      const [ids,movies]=await Promise.all([libraryFacet(s.user_id,s.token,facet),library(s.user_id,s.token)]);
+      const allowed=new Set(movies.map(m=>m.id));return json({ids:ids.filter(id=>allowed.has(id))});
+    }
     if(path==='library/refresh'&&req.method==='POST'){
       const movies=await library(s.user_id,s.token,true);return json({count:movies.length});
     }
     if (path==='library' && req.method==='GET') {
       const [movies,own]=await Promise.all([library(s.user_id,s.token),state(s.user_id)]);
-      return json({movies:movies.map(m=>({...m,rated:own.ratings.find(r=>r.item_id===m.id)?.value})),ratingCount:own.ratings.length});
+      const watched=new Set(own.history);
+      return json({movies:movies.map(m=>({...m,played:m.played||watched.has(m.id),rated:own.ratings.find(r=>r.item_id===m.id)?.value})),ratingCount:own.ratings.length});
     }
     if (path==='recommendations' && req.method==='GET') {
       const [movies,own]=await Promise.all([library(s.user_id,s.token),state(s.user_id)]);

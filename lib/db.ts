@@ -23,6 +23,9 @@ export async function ready() {
     ALTER TABLE rooms ADD COLUMN IF NOT EXISTS revision bigint NOT NULL DEFAULT 0;
     ALTER TABLE rooms ADD COLUMN IF NOT EXISTS selected_item_id text;
     ALTER TABLE rooms ADD COLUMN IF NOT EXISTS selected_at timestamptz;
+    CREATE TABLE IF NOT EXISTS library_facets (
+      cache_key text PRIMARY KEY, ids jsonb NOT NULL, updated timestamptz NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS imported_history (
       user_id text NOT NULL REFERENCES profiles(id), item_id text NOT NULL, PRIMARY KEY(user_id,item_id)
     );

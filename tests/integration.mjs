@@ -29,7 +29,11 @@ const fake=createServer(async(req,res)=>{
  if(url.pathname.startsWith('/Sessions/')&&req.method==='POST'){
   assert.equal(url.pathname,`/Sessions/tv-${user}/Playing`);assert.equal(url.searchParams.get('playCommand'),'PlayNow');assert.equal(url.searchParams.get('itemIds'),'shared');playCommands++;res.writeHead(204);return res.end();
  }
- if(url.pathname==='/Items'){if(holdLibrary&&user==='alice')await libraryGate;libraryReads.set(user,(libraryReads.get(user)||0)+1);return res.end(JSON.stringify({Items:catalogs[user],TotalRecordCount:catalogs[user].length}));}
+ if(url.pathname==='/Items'){
+  if(url.searchParams.has('audioLanguages')){assert.equal(url.searchParams.get('userId'),user);assert.equal(url.searchParams.get('audioLanguages'),'dan,da');const items=catalogs[user].filter(m=>m.Id==='shared');return res.end(JSON.stringify({Items:items,TotalRecordCount:items.length}));}
+  if(url.searchParams.get('fields')==='ProductionLocations'){assert.equal(url.searchParams.get('userId'),user);return res.end(JSON.stringify({Items:catalogs[user].map(m=>({...m,ProductionLocations:m.Id==='alice-only'?['Denmark']:['USA']})),TotalRecordCount:catalogs[user].length}));}
+  if(holdLibrary&&user==='alice')await libraryGate;libraryReads.set(user,(libraryReads.get(user)||0)+1);return res.end(JSON.stringify({Items:catalogs[user],TotalRecordCount:catalogs[user].length}));
+ }
  const id=url.pathname.split('/').at(-1),item=catalogs[user].find(m=>m.Id===id);
  if(!item){res.writeHead(404);return res.end('{}');}
  return res.end(JSON.stringify(item));
@@ -61,6 +65,10 @@ try{
  assert.equal((await call('playback?itemId=alice-only',bob)).status,403);
  assert.equal(devices.size,3,'Each user must authenticate as an independent Jellyfin device');
  assert.equal((await (await call('library',alice)).json()).movies.length,3);
+ assert.deepEqual((await(await call('library/facets/danish-audio',alice)).json()).ids,['shared']);
+ assert.deepEqual((await(await call('library/facets/danish-origin',alice)).json()).ids,['alice-only']);
+ assert.deepEqual((await(await call('library/facets/danish-origin',bob)).json()).ids,[]);
+ assert.equal((await call('library/facets/unknown',alice)).status,400);
  assert.equal((await call('rate',alice,{id:'alice-liked',value:3})).status,200);
  assert.equal((await call('rate',alice,{id:'alice-liked',value:999})).status,400);
  const preview=await(await call('import/preview',alice,{csv:'Const,Your Rating,Title,Year\n,2,Liked,2020\n,9,Missing,2020'})).json();
@@ -71,6 +79,7 @@ try{
  assert.equal((await call('import/commit',bob,{rows:[{itemId:'bob-only',value:null,watched:true}]})).status,200);
  assert.ok(!(await(await call('recommendations',bob)).json()).movies.some(m=>m.id==='bob-only'),'Watch history excludes watched titles without creating a like');
  assert.ok((await(await call('library',bob)).json()).movies.every(m=>m.rated===undefined));
+ assert.equal((await(await call('library',bob)).json()).movies.find(m=>m.id==='bob-only').played,true,'Imported history counts as watched for library filters');
 
  assert.notEqual((await call('rate',bob,{id:'alice-only',value:3})).status,200);
  const own=await (await call('library',alice)).json();assert.equal(own.movies.find(m=>m.id==='alice-liked').rated,3);

@@ -21,7 +21,7 @@ export async function jelly(path: string, token?: string, init: RequestInit = {}
   // Every authentication gets its own device; later calls identify that session by token.
   headers.set('Authorization', token
     ? `MediaBrowser Token="${token.replace(/["\r\n]/g,'')}"`
-    : `MediaBrowser Client="MovieMate", Device="MovieMate", DeviceId="moviemate-${randomUUID()}", Version="0.1.8"`);
+    : `MediaBrowser Client="MovieMate", Device="MovieMate", DeviceId="moviemate-${randomUUID()}", Version="0.1.9"`);
   if (init.body) headers.set('Content-Type','application/json');
   const res = await fetch(`${serverUrl()}${path}`, { ...init, headers, cache: 'no-store', signal: AbortSignal.timeout(timeoutMs), redirect: 'error' });
   if (!res.ok) throw new JellyfinError(res.status);
