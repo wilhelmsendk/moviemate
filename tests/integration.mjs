@@ -7,7 +7,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 if(!process.env.TEST_DATABASE_URL)throw Error('Set TEST_DATABASE_URL to an isolated test database');
 const film=(Id,Name)=>({Id,Name,Type:'Movie',ProductionYear:2020,RunTimeTicks:60000000000,Genres:['Comedy'],People:[],UserData:{Played:false},ImageTags:{}});
 const catalogs={alice:[film('shared','Shared'),film('alice-only','Alice private'),film('alice-liked','Liked')],bob:[film('shared','Shared'),film('bob-only','Bob private')],charlie:[]};
-let destination,playing=false,paused=false,playCommands=0;
+let destination,playing=false,paused=false,playCommands=0,position=0;
 const devices=new Map(),validTokens=new Set(),libraryReads=new Map();
 const fake=createServer(async(req,res)=>{
  const url=new URL(req.url,'http://fake');let user=(req.headers.authorization||'').match(/Token="([^"]+)"/)?.[1];
@@ -23,7 +23,7 @@ const fake=createServer(async(req,res)=>{
  if(!catalogs[user]||!validTokens.has(user)){res.writeHead(401);return res.end('{}');}
  if(url.pathname==='/Sessions'){
   assert.equal(url.searchParams.get('controllableByUserId'),user);
-  return res.end(JSON.stringify([{Id:`tv-${user}`,DeviceName:`${user} TV`,Client:'Moonfin',SupportsRemoteControl:true,NowPlayingItem:playing&&user==='alice'?{Id:'shared'}:null,PlayState:{IsPaused:paused}}]));
+  return res.end(JSON.stringify([{Id:`tv-${user}`,DeviceName:`${user} TV`,Client:'Moonfin',SupportsRemoteControl:true,NowPlayingItem:playing&&user==='alice'?{Id:'shared'}:null,PlayState:{IsPaused:paused,PositionTicks:position}}]));
  }
  if(url.pathname.startsWith('/Sessions/')&&req.method==='POST'){
   assert.equal(url.pathname,`/Sessions/tv-${user}/Playing`);assert.equal(url.searchParams.get('playCommand'),'PlayNow');assert.equal(url.searchParams.get('itemIds'),'shared');playCommands++;res.writeHead(204);return res.end();
@@ -62,6 +62,15 @@ try{
  assert.equal((await (await call('library',alice)).json()).movies.length,3);
  assert.equal((await call('rate',alice,{id:'alice-liked',value:3})).status,200);
  assert.equal((await call('rate',alice,{id:'alice-liked',value:999})).status,400);
+ const preview=await(await call('import/preview',alice,{csv:'Const,Your Rating,Title,Year\n,2,Liked,2020\n,9,Missing,2020'})).json();
+ assert.equal(preview.rows[0].itemId,'alice-liked');assert.equal(preview.rows[1].issue,'unmatched');
+ assert.equal((await call('import/commit',bob,{rows:[{itemId:'alice-only',value:3,watched:true}]})).status,400);
+ assert.equal((await call('import/commit',alice,{rows:[{itemId:'alice-liked',value:-2,watched:true}]})).status,200);
+ assert.equal((await(await call('library',alice)).json()).movies.find(m=>m.id==='alice-liked').rated,3,'Import must preserve existing ratings');
+ assert.equal((await call('import/commit',bob,{rows:[{itemId:'bob-only',value:null,watched:true}]})).status,200);
+ assert.ok(!(await(await call('recommendations',bob)).json()).movies.some(m=>m.id==='bob-only'),'Watch history excludes watched titles without creating a like');
+ assert.ok((await(await call('library',bob)).json()).movies.every(m=>m.rated===undefined));
+
  assert.notEqual((await call('rate',bob,{id:'alice-only',value:3})).status,200);
  const own=await (await call('library',alice)).json();assert.equal(own.movies.find(m=>m.id==='alice-liked').rated,3);
  const other=await (await call('library',bob)).json();assert.ok(other.movies.every(m=>m.rated===undefined));
@@ -86,7 +95,26 @@ try{
  assert.equal((await(await call('tonight',charlie)).json()).choice,null);
  assert.equal((await(await call(`playback?itemId=shared&code=${code}`,bob)).json()).status,'playing','Partners can see confirmed playback of their chosen film');
  assert.equal((await(await call('playback?itemId=shared&code=invalid',bob)).json()).status,'idle');
+ // Stopping early must not trigger a rating prompt.
  playing=false;
+ await call('playback?itemId=shared',alice);
+ assert.deepEqual((await(await call('reviews',alice)).json()).movies,[]);
+ playing=true;position=60000000000*.9;
+ await call(`playback?itemId=shared&code=${code}`,alice);
+ await call(`playback?itemId=shared&code=${code}`,bob);
+ // Both participants can reopen after the film ends: reviews reconciles persisted progress.
+ playing=false;
+ assert.equal((await(await call('reviews',alice)).json()).movies[0].id,'shared');
+ assert.equal((await(await call('reviews',bob)).json()).movies[0].id,'shared');
+ await call('reviews/dismiss',charlie,{itemId:'shared'});
+ assert.equal((await(await call('reviews',alice)).json()).movies.length,1);
+ await call('reviews/dismiss',alice,{itemId:'shared'});
+ assert.deepEqual((await(await call('reviews',alice)).json()).movies,[]);
+ await call('rate',bob,{id:'shared',value:1});
+ assert.deepEqual((await(await call('reviews',bob)).json()).movies,[]);
+ await call('rate',bob,{id:'shared',value:null});
+ await call('reviews/dismiss',bob,{itemId:'shared'});
+ position=0;
 
 
  view=await(await call(`rooms/${code}`,alice)).json();assert.equal(view.selected.id,'shared');

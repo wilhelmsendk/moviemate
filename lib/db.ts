@@ -23,6 +23,16 @@ export async function ready() {
     ALTER TABLE rooms ADD COLUMN IF NOT EXISTS revision bigint NOT NULL DEFAULT 0;
     ALTER TABLE rooms ADD COLUMN IF NOT EXISTS selected_item_id text;
     ALTER TABLE rooms ADD COLUMN IF NOT EXISTS selected_at timestamptz;
+    CREATE TABLE IF NOT EXISTS imported_history (
+      user_id text NOT NULL REFERENCES profiles(id), item_id text NOT NULL, PRIMARY KEY(user_id,item_id)
+    );
+    CREATE TABLE IF NOT EXISTS watch_reviews (
+      user_id text NOT NULL REFERENCES profiles(id), item_id text NOT NULL, progress real NOT NULL DEFAULT 0,
+      pending boolean NOT NULL DEFAULT false, dismissed boolean NOT NULL DEFAULT false,
+      last_seen timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(user_id,item_id)
+    );
+    ALTER TABLE watch_reviews ADD COLUMN IF NOT EXISTS play_owner text;
+    ALTER TABLE watch_reviews ADD COLUMN IF NOT EXISTS session_id text;
     CREATE TABLE IF NOT EXISTS room_votes (
       code text NOT NULL REFERENCES rooms(code) ON DELETE CASCADE,
       user_id text NOT NULL REFERENCES profiles(id), item_id text NOT NULL,

@@ -1,5 +1,5 @@
 export type Movie = {
-  id: string; title: string; year: number; minutes: number; genres: string[];
+  providerIds?:Record<string,string>; id: string; title: string; year: number; minutes: number; genres: string[];
   people: { id: string; name: string; type: string }[]; overview: string;
   played: boolean; favorite: boolean; imageTag?: string; audio: string[]; trailers?: {name:string;url:string}[];
 };

@@ -1,3 +1,4 @@
+import {importRows,previewImport} from '@/lib/import-history';
 import {playbackSessions,playbackStatus} from '@/lib/playback';
 import {resolveLanguage,translate} from '@/lib/i18n';
 import { randomBytes, createHash } from 'node:crypto';
@@ -14,10 +15,10 @@ const pairCache=createAsyncCache<ReturnType<typeof pairRank>>(60000,48);
 const posterCache=createAsyncCache<{bytes:Uint8Array;type:string}>(600000,128);
 const failures = new Map<string,{n:number;until:number}>();
 class HttpError extends Error { constructor(public status:number,message:string) { super(message); } }
-async function body(req:NextRequest) {
-  if (Number(req.headers.get('content-length') || 0)>12000) throw new HttpError(413,'For stor forespørgsel');
+async function body(req:NextRequest,limit=12000) {
+  if (Number(req.headers.get('content-length') || 0)>limit) throw new HttpError(413,'For stor forespørgsel');
   const text = await req.text();
-  if (text.length>12000) throw new HttpError(413,'For stor forespørgsel');
+  if (text.length>limit) throw new HttpError(413,'For stor forespørgsel');
   try { return JSON.parse(text); } catch { throw new HttpError(400,'Ugyldige data'); }
 }
 async function session(req:NextRequest) {
@@ -28,11 +29,12 @@ async function session(req:NextRequest) {
   return result.rows[0] as {hash:string;user_id:string;token:string;name:string;receive_recommendations:boolean;language:'da'|'en'|null};
 }
 async function state(userId:string) {
-  const [r,d] = await Promise.all([
+  const [r,d,h] = await Promise.all([
     pool.query<Rating>('SELECT item_id,value FROM ratings WHERE user_id=$1',[userId]),
-    pool.query('SELECT item_id FROM dismissals WHERE user_id=$1 AND expires>now()',[userId])
+    pool.query('SELECT item_id FROM dismissals WHERE user_id=$1 AND expires>now()',[userId]),
+    pool.query('SELECT item_id FROM imported_history WHERE user_id=$1',[userId])
   ]);
-  return {ratings:r.rows,excluded:d.rows.map(x=>x.item_id)};
+  return {history:h.rows.map(x=>x.item_id) as string[],ratings:r.rows,excluded:d.rows.map(x=>x.item_id)};
 }
 async function handle(req:NextRequest) {
   const started=performance.now();
@@ -77,17 +79,23 @@ async function handle(req:NextRequest) {
     const s=await session(req);
     if(path==='playback'&&req.method==='GET'){
       const itemId=req.nextUrl.searchParams.get('itemId')||'';
-      if(!(await library(s.user_id,s.token)).some(m=>m.id===itemId))throw new HttpError(403,'Filmen er ikke tilgængelig for dig');
+      const movie=(await library(s.user_id,s.token)).find(m=>m.id===itemId);
+      if(!movie)throw new HttpError(403,'Filmen er ikke tilgængelig for dig');
       const mine=await playbackSessions(s.user_id,s.token);
-      let status=playbackStatus(mine,itemId);
+      let observer=s.user_id;let observed=mine;let status=playbackStatus(mine,itemId);
       const code=req.nextUrl.searchParams.get('code');
       if(code&&status.status==='idle'){
         const room=await pool.query('SELECT CASE WHEN host_id=$1 THEN guest_id ELSE host_id END AS partner FROM rooms WHERE code=$2 AND selected_item_id=$3 AND (host_id=$1 OR guest_id=$1)',[s.user_id,code,itemId]);
         if(room.rows[0]?.partner){
           const partner=await pool.query('SELECT token FROM sessions WHERE user_id=$1 AND expires>now() ORDER BY expires DESC LIMIT 1',[room.rows[0].partner]);
-          if(partner.rows[0])try{status=playbackStatus(await playbackSessions(room.rows[0].partner,partner.rows[0].token),itemId);}catch{}
+          if(partner.rows[0])try{observer=room.rows[0].partner;observed=await playbackSessions(observer,partner.rows[0].token);status=playbackStatus(observed,itemId);}catch{}
         }
       }
+      if(status.status!=='idle'){
+        const active=observed.find(d=>d.NowPlayingItem?.Id===itemId);
+        const progress=movie.minutes>0?Math.min(1,(active?.PlayState?.PositionTicks||0)/(movie.minutes*600000000)):0;
+        await pool.query('INSERT INTO watch_reviews(user_id,item_id,progress,play_owner,session_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT(user_id,item_id) DO UPDATE SET progress=GREATEST(watch_reviews.progress,excluded.progress),last_seen=now(),play_owner=excluded.play_owner,session_id=excluded.session_id',[s.user_id,itemId,progress,observer,active?.Id]);
+      }else await pool.query('UPDATE watch_reviews SET pending=true WHERE user_id=$1 AND item_id=$2 AND progress>=0.85 AND dismissed=false',[s.user_id,itemId]);
       return json({...status,targets:mine.map(d=>({id:d.Id,name:d.DeviceName||d.Client||'Jellyfin'}))});
     }
     if(path==='playback/start'&&req.method==='POST'){
@@ -99,6 +107,43 @@ async function handle(req:NextRequest) {
       if(!targets.some(d=>d.Id===b.sessionId))throw new HttpError(403,'Enheden er ikke tilgængelig for fjernstyring');
       await jelly(`/Sessions/${encodeURIComponent(b.sessionId)}/Playing?${new URLSearchParams({playCommand:'PlayNow',itemIds:b.itemId,startPositionTicks:'0'})}`,s.token,{method:'POST'});
       return json({accepted:true});
+    }
+    if(path==='reviews'&&req.method==='GET'){
+      const watching=await pool.query('SELECT w.* FROM watch_reviews w WHERE w.user_id=$1 AND w.progress>=0.85 AND w.pending=false AND w.dismissed=false AND w.play_owner IS NOT NULL AND NOT EXISTS(SELECT 1 FROM ratings r WHERE r.user_id=w.user_id AND r.item_id=w.item_id) ORDER BY w.last_seen DESC LIMIT 5',[s.user_id]);
+      const observed=new Map<string,Awaited<ReturnType<typeof playbackSessions>>>();
+      for(const watch of watching.rows){try{
+        if(!observed.has(watch.play_owner)){
+          const actor=await pool.query('SELECT token FROM sessions WHERE user_id=$1 AND expires>now() ORDER BY expires DESC LIMIT 1',[watch.play_owner]);
+          if(!actor.rows[0])continue;
+          observed.set(watch.play_owner,await playbackSessions(watch.play_owner,actor.rows[0].token));
+        }
+        if(!observed.get(watch.play_owner)!.some(d=>d.Id===watch.session_id&&d.NowPlayingItem?.Id===watch.item_id))await pool.query('UPDATE watch_reviews SET pending=true WHERE user_id=$1 AND item_id=$2',[s.user_id,watch.item_id]);
+      }catch{} }
+
+      const reviews=await pool.query('SELECT w.item_id FROM watch_reviews w WHERE w.user_id=$1 AND w.pending=true AND w.dismissed=false AND NOT EXISTS(SELECT 1 FROM ratings r WHERE r.user_id=w.user_id AND r.item_id=w.item_id) ORDER BY w.last_seen DESC LIMIT 5',[s.user_id]);
+      const movies=reviews.rows.length?await library(s.user_id,s.token):[];
+      return json({movies:reviews.rows.map(r=>movies.find(m=>m.id===r.item_id)).filter(Boolean)});
+    }
+    if(path==='reviews/dismiss'&&req.method==='POST'){
+      const b=await body(req);if(typeof b.itemId!=='string')throw new HttpError(400,'Ugyldig film');
+      await pool.query('UPDATE watch_reviews SET dismissed=true,pending=false WHERE user_id=$1 AND item_id=$2',[s.user_id,b.itemId]);return json({ok:true});
+    }
+    if(path==='import/preview'&&req.method==='POST'){
+      const b=await body(req,2100000);if(typeof b.csv!=='string')throw new HttpError(400,'Ugyldig CSV-fil');
+      let rows;try{rows=importRows(b.csv);}catch(e){throw new HttpError(400,e instanceof Error?e.message:'Ugyldig CSV-fil');}
+      return json({rows:previewImport(rows,await library(s.user_id,s.token))});
+    }
+    if(path==='import/commit'&&req.method==='POST'){
+      const b=await body(req,1000000);
+      if(!Array.isArray(b.rows)||!b.rows.length||b.rows.length>10000)throw new HttpError(400,'Ugyldige data');
+      const movies=await library(s.user_id,s.token),allowed=new Set(movies.map(m=>m.id)),seen=new Set();
+      for(const row of b.rows){if(!row||typeof row.itemId!=='string'||!allowed.has(row.itemId)||seen.has(row.itemId)||!(row.value===null||[-2,1,3].includes(row.value))||typeof row.watched!=='boolean')throw new HttpError(400,'Ugyldige data');seen.add(row.itemId);}
+      const client=await pool.connect();let saved=0;
+      try{await client.query('BEGIN');for(const row of b.rows){
+        if(row.watched)await client.query('INSERT INTO imported_history(user_id,item_id) VALUES($1,$2) ON CONFLICT DO NOTHING',[s.user_id,row.itemId]);
+        if(row.value!==null){const r=await client.query('INSERT INTO ratings(user_id,item_id,value) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING item_id',[s.user_id,row.itemId,row.value]);saved+=r.rowCount||0;}
+      }await client.query('COMMIT');}catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+      return json({ok:true,ratingsSaved:saved,historySaved:b.rows.filter((r:any)=>r.watched).length});
     }
     if (path==='logout' && req.method==='POST') {
       await pool.query('DELETE FROM sessions WHERE hash=$1',[s.hash]);
@@ -186,7 +231,7 @@ async function handle(req:NextRequest) {
     if (path==='recommendations' && req.method==='GET') {
       const [movies,own]=await Promise.all([library(s.user_id,s.token),state(s.user_id)]);
       const max=Number(req.nextUrl.searchParams.get('minutes')) || 0;
-      return json({movies:recommend(movies,own.ratings,max,own.excluded),personalized:own.ratings.some(r=>r.value>0)||movies.some(m=>m.favorite)});
+      return json({movies:recommend(movies.map(m=>({...m,played:m.played||own.history.includes(m.id)})),own.ratings,max,own.excluded),personalized:own.ratings.some(r=>r.value>0)||movies.some(m=>m.favorite)});
     }
     if ((path==='rate'||path==='dismiss') && req.method==='POST') {
       const b=await body(req);
@@ -275,7 +320,7 @@ async function handle(req:NextRequest) {
       }),state(s.user_id),state(otherId)]);
       // Both users must have access; watched/rated/dismissed titles are excluded separately.
       const key=hash(JSON.stringify([code,s.user_id,myMovies.map(m=>[m.id,m.played,m.favorite]),theirMovies.map(m=>[m.id,m.played,m.favorite]),myState,theirState]));
-      const movies=await pairCache.get(key,async()=>pairRank(recommend(myMovies,myState.ratings,0,myState.excluded,myMovies.length),recommend(theirMovies,theirState.ratings,0,theirState.excluded,theirMovies.length)).slice(0,5));
+      const movies=await pairCache.get(key,async()=>pairRank(recommend(myMovies.map(m=>({...m,played:m.played||myState.history.includes(m.id)})),myState.ratings,0,myState.excluded,myMovies.length),recommend(theirMovies.map(m=>({...m,played:m.played||theirState.history.includes(m.id)})),theirState.ratings,0,theirState.excluded,theirMovies.length)).slice(0,5));
       const voted=await pool.query('SELECT item_id,user_id FROM room_votes WHERE code=$1',[code]);
       const votes=[...new Set<string>(voted.rows.map(v=>v.item_id))].map(itemId=>({itemId,mine:voted.rows.some(v=>v.item_id===itemId&&v.user_id===s.user_id),partner:voted.rows.some(v=>v.item_id===itemId&&v.user_id===otherId)}));
       const selected=room.selected_item_id?myMovies.find(m=>m.id===room.selected_item_id&&theirMovies.some(t=>t.id===m.id))||null:null;

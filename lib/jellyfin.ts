@@ -19,7 +19,7 @@ export async function jelly(path: string, token?: string, init: RequestInit = {}
   // Every authentication gets its own device; later calls identify that session by token.
   headers.set('Authorization', token
     ? `MediaBrowser Token="${token.replace(/["\r\n]/g,'')}"`
-    : `MediaBrowser Client="MovieMate", Device="MovieMate", DeviceId="moviemate-${randomUUID()}", Version="0.1.6"`);
+    : `MediaBrowser Client="MovieMate", Device="MovieMate", DeviceId="moviemate-${randomUUID()}", Version="0.1.7"`);
   if (init.body) headers.set('Content-Type','application/json');
   const res = await fetch(`${serverUrl()}${path}`, { ...init, headers, cache: 'no-store', signal: AbortSignal.timeout(20000), redirect: 'error' });
   if (!res.ok) throw new JellyfinError(res.status);
@@ -33,7 +33,7 @@ export function library(userId:string,token:string,force=false):Promise<Movie[]>
 async function fetchLibrary(userId: string, token: string): Promise<Movie[]> {
   const items: Movie[] = [];
   for (let start = 0; ; start += 500) {
-    const query = new URLSearchParams({ userId, includeItemTypes:'Movie', recursive:'true', fields:'Genres,People,Overview,MediaStreams', enableUserData:'true', startIndex:String(start), limit:'500' });
+    const query = new URLSearchParams({ userId, includeItemTypes:'Movie', recursive:'true', fields:'Genres,People,Overview,MediaStreams,ProviderIds', enableUserData:'true', startIndex:String(start), limit:'500' });
     const data = await (await jelly(`/Items?${query}`,token)).json();
     for (const m of data.Items || []) items.push(mapMovie(m));
     if (!data.Items?.length || items.length >= (data.TotalRecordCount ?? items.length)) break;
@@ -44,7 +44,7 @@ async function fetchLibrary(userId: string, token: string): Promise<Movie[]> {
 
 export function mapMovie(m:Record<string,any>):Movie {
   return {
-      id:m.Id, title:m.Name || 'Ukendt titel', year:m.ProductionYear || 0,
+      providerIds:m.ProviderIds||{}, id:m.Id, title:m.Name || 'Ukendt titel', year:m.ProductionYear || 0,
       minutes:Math.round((m.RunTimeTicks || 0)/600000000), genres:m.Genres || [],
       people:(m.People || []).map((p: {Id?:string;Name:string;Type:string}) => ({id:p.Id || '',name:p.Name,type:p.Type})),
       overview:m.Overview || '', played:!!m.UserData?.Played, favorite:!!m.UserData?.IsFavorite,

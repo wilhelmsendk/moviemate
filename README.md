@@ -203,3 +203,11 @@ Choose Danish or English on the login screen or in your profile. Your preference
 Open a film or your chosen movie-night card to select an active Jellyfin/Moonfin device and start playback. The TV app must be open and allow remote control; MovieMate cannot turn on the TV. An accepted command shows a waiting state, and only Jellyfin's matching now-playing session confirms “Playing now” or “Paused”. The shared choice stays visible until you explicitly finish it. Both participants can see playback of their selected film. No server administrator API key is required.
 
 If no device appears, open the TV app and check its remote-control settings and the user's Jellyfin permissions. Manual playback remains available. Physical client compatibility must be verified on your own device.
+
+### 0.1.7 — post-film feedback and history import
+
+MovieMate offers a rating card after observing at least 85% playback followed by a stopped session. A pause or early stop does not count. Progress is stored in PostgreSQL so that reopening MovieMate can detect a completed observed session. The phone must have had MovieMate open on the selected film or film details during playback to observe that progress. This is an in-app prompt, not a background push notification. Either participant can rate privately or skip; an existing rating suppresses the prompt.
+
+Under your profile, upload an IMDb ratings CSV, a Letterboxd ratings/diary CSV, or a Netflix viewing-activity CSV. Preview the matches, deselect entries, then confirm. IMDb provider IDs are preferred; otherwise MovieMate requires an exact normalized title and, where supplied, matching year. Ambiguous and missing films are skipped. This first version imports only titles present in your accessible library; external films need metadata enrichment in a later version. No uploaded CSV is retained.
+
+IMDb 9–10 and Letterboxd 4.5–5 become favourites; IMDb 6–8 and Letterboxd 3–4 become liked; lower ratings become not-for-me. Viewing history without a rating is only a weak watched signal and excludes the film from unseen recommendations. Existing MovieMate ratings are never overwritten. All changes remain in MovieMate and do not change Jellyfin. Maximum file size 2 MB and 10,000 rows per import.

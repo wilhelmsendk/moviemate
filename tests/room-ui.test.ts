@@ -11,6 +11,7 @@ test('couples approve a film and see a shared confirmed choice, with an explicit
  let selected:typeof movie|null=null,approved=false;const calls:string[]=[];
  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
   const url=String(input);
+  if(url==='/api/reviews')return new Response(JSON.stringify({movies:[]}));
   if(url.startsWith('/api/playback?'))return new Response(JSON.stringify({targets:[],status:'idle',device:''}));calls.push(url);let data:unknown;
   if(url==='/api/me')data={id:'alice',name:'Alice'};
   else if(url==='/api/tonight')data={choice:selected?{code:'ROOM',version:0,partner:'Bob',movie:selected}:null};
