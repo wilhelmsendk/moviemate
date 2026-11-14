@@ -83,8 +83,8 @@ async function handle(req:NextRequest) {
       const b=await body(req);
       if (typeof b.id!=='string'||!/^[-a-zA-Z0-9]{1,80}$/.test(b.id)) throw new HttpError(400,'Ugyldig film');
       // Check the user's actual library permissions, not a supplied user ID.
-      const movie=await (await jelly(`/Users/${s.user_id}/Items/${b.id}`,s.token)).json();
-      if (movie.Type!=='Movie') throw new HttpError(400,'Vælg en film');
+      const visible=await library(s.user_id,s.token);
+      if (!visible.some(movie=>movie.id===b.id)) throw new HttpError(403,'Filmen findes ikke i dit tilgængelige bibliotek');
       if (path==='dismiss') await pool.query("INSERT INTO dismissals(user_id,item_id,expires) VALUES($1,$2,now()+interval '12 hours') ON CONFLICT(user_id,item_id) DO UPDATE SET expires=excluded.expires",[s.user_id,b.id]);
       else if (b.value===null) await pool.query('DELETE FROM ratings WHERE user_id=$1 AND item_id=$2',[s.user_id,b.id]);
       else {

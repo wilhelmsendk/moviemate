@@ -2,7 +2,7 @@
 
 **Less scrolling. Better movie nights.** A mobile-first, self-hosted companion for the films already on your Jellyfin server.
 
-MovieMate is an early **0.1.1 alpha**, not a finished product. The interface is currently Danish. It does not download media, modify film files, change Jellyfin ratings, or claim that similarity scores are probabilities.
+MovieMate is an early **0.1.2 alpha**, not a finished product. The interface is currently Danish. It does not download media, modify film files, change Jellyfin ratings, or claim that similarity scores are probabilities.
 
 ## What works in this version
 
@@ -53,7 +53,7 @@ Repository access is currently controlled by its owner; if the repository is pri
 3. Open **Sammen**, create an invitation code, and ask your partner to sign into MovieMate with their own Jellyfin profile on another phone/browser and enter it.
 4. Open the chosen film yourself in Moonfin/Jellyfin on the TV. **Remote playback is not implemented in 0.1.**
 
-Two people using one shared Jellyfin account do not yet have separate MovieMate taste profiles. Sessions expire after seven days. Invitations expire after two hours. Library data is fetched on demand rather than stored as a background mirror.
+Two people using one shared Jellyfin account do not yet have separate MovieMate taste profiles. Sessions expire after seven days. Invitations expire after two hours. Library metadata is fetched on demand, coalesced for concurrent requests and cached in memory for 30 seconds per user/token (bounded to 24 sessions). It is not a persistent background mirror. Library access changes may take up to 30 seconds to reach this metadata cache; poster requests still check Jellyfin access directly. Ratings are read separately from PostgreSQL.
 
 ### Phone installation
 
@@ -152,3 +152,13 @@ AGPL-3.0-only. See [LICENSE](LICENSE). MovieMate is independent of Jellyfin and 
 - Regression coverage includes 500-film pair ranking and a Jellyfin simulator that invalidates sessions when a device ID is reused.
 
 After upgrading from 0.1.0, both partners should log out of MovieMate and log back in to obtain independent Jellyfin sessions. Existing ratings are retained.
+
+## 0.1.2 responsiveness fixes
+
+- The MovieMate logo switches to Tonight without a page reload; movie lists stay in browser memory while the app is open.
+- Rating a film updates it immediately without locking other films. Failed saves are rolled back and shown as an error.
+- Recommendation refresh happens in the background; late responses cannot replace a newer refresh or cross into another signed-in account.
+- Changing runtime filters refreshes recommendations only, not the complete library.
+- A bounded, 30-second per-session metadata cache coalesces simultaneous library reads. Failed reads are not cached and different users/tokens never share entries.
+- Rating authorization checks the same permission-scoped library snapshot, avoiding a fresh Jellyfin metadata request for every click.
+- Component tests simulate multiple ratings before the first save finishes, failed saves, and returning home without another library request. API tests verify metadata reuse and user isolation.

@@ -7,7 +7,7 @@ if(!process.env.TEST_DATABASE_URL)throw Error('Set TEST_DATABASE_URL to an isola
 const film=(Id,Name)=>({Id,Name,Type:'Movie',ProductionYear:2020,RunTimeTicks:60000000000,Genres:['Comedy'],People:[],UserData:{Played:false},ImageTags:{}});
 const catalogs={alice:[film('shared','Shared'),film('alice-only','Alice private'),film('alice-liked','Liked')],bob:[film('shared','Shared'),film('bob-only','Bob private')],charlie:[]};
 let destination;
-const devices=new Map(),validTokens=new Set();
+const devices=new Map(),validTokens=new Set(),libraryReads=new Map();
 const fake=createServer(async(req,res)=>{
  const url=new URL(req.url,'http://fake');let user=(req.headers.authorization||'').match(/Token="([^"]+)"/)?.[1];
  if(url.pathname==='/Users/AuthenticateByName'){
@@ -20,7 +20,7 @@ const fake=createServer(async(req,res)=>{
   return res.end(JSON.stringify({AccessToken:b.Username,User:{Id:b.Username,Name:b.Username}}));
  }
  if(!catalogs[user]||!validTokens.has(user)){res.writeHead(401);return res.end('{}');}
- if(url.pathname==='/Items')return res.end(JSON.stringify({Items:catalogs[user],TotalRecordCount:catalogs[user].length}));
+ if(url.pathname==='/Items'){libraryReads.set(user,(libraryReads.get(user)||0)+1);return res.end(JSON.stringify({Items:catalogs[user],TotalRecordCount:catalogs[user].length}));}
  const id=url.pathname.split('/').at(-1),item=catalogs[user].find(m=>m.Id===id);
  if(!item){res.writeHead(404);return res.end('{}');}
  return res.end(JSON.stringify(item));
@@ -54,7 +54,9 @@ try{
  assert.equal((await call('dismiss',alice,{id:'shared'})).status,200);
  assert.ok(!(await (await call('recommendations',alice)).json()).movies.some(m=>m.id==='shared'));
  assert.equal((await call('rate',alice,{id:'alice-liked',value:null})).status,200);
+ assert.equal(libraryReads.get('alice'),1,'Ratings and recommendations must reuse Alice metadata');
+ assert.equal(libraryReads.get('bob'),1,'Private library cache must be scoped to Bob');
  assert.equal((await call('logout',alice,{})).status,200);
  assert.equal((await call('me',alice)).status,401);
- console.log('PASS: independent Jellyfin sessions, login, CSRF, authorization, persistent ratings, isolation, room consent, intersection, snooze, undo and logout');
+ console.log('PASS: per-session metadata reuse, independent Jellyfin sessions, login, CSRF, authorization, persistent ratings, isolation, room consent, intersection, snooze, undo and logout');
 }catch(e){console.error(output);throw e;}finally{child.kill('SIGTERM');await new Promise(r=>fake.close(r));}

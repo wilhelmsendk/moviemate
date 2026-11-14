@@ -1,5 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import type { Movie } from './types';
+import { createAsyncCache } from './cache';
+const libraryCache=createAsyncCache<Movie[]>(30000);
+
 export function serverUrl() {
   const url = new URL(process.env.JELLYFIN_URL || 'http://host.docker.internal:8096');
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Ugyldig JELLYFIN_URL');
@@ -11,14 +14,18 @@ export async function jelly(path: string, token?: string, init: RequestInit = {}
   // Every authentication gets its own device; later calls identify that session by token.
   headers.set('Authorization', token
     ? `MediaBrowser Token="${token.replace(/["\r\n]/g,'')}"`
-    : `MediaBrowser Client="MovieMate", Device="MovieMate", DeviceId="moviemate-${randomUUID()}", Version="0.1.1"`);
+    : `MediaBrowser Client="MovieMate", Device="MovieMate", DeviceId="moviemate-${randomUUID()}", Version="0.1.2"`);
   if (init.body) headers.set('Content-Type','application/json');
   const res = await fetch(`${serverUrl()}${path}`, { ...init, headers, cache: 'no-store', signal: AbortSignal.timeout(20000), redirect: 'error' });
   if (!res.ok) throw new JellyfinError(res.status);
   return res;
 }
 export class JellyfinError extends Error { constructor(public status: number) { super(`Jellyfin svarede ${status}`); } }
-export async function library(userId: string, token: string): Promise<Movie[]> {
+export function library(userId:string,token:string):Promise<Movie[]> {
+  const key=createHash('sha256').update(`${serverUrl()}\0${userId}\0${token}`).digest('hex');
+  return libraryCache.get(key,()=>fetchLibrary(userId,token));
+}
+async function fetchLibrary(userId: string, token: string): Promise<Movie[]> {
   const items: Movie[] = [];
   for (let start = 0; ; start += 500) {
     const query = new URLSearchParams({ userId, includeItemTypes:'Movie', recursive:'true', fields:'Genres,People,Overview,MediaStreams', enableUserData:'true', startIndex:String(start), limit:'500' });
