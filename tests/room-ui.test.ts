@@ -10,7 +10,8 @@ test('couples approve a film and see a shared confirmed choice, with an explicit
  const movie={id:'shared',title:'Shared film',year:2020,minutes:100,genres:['Comedy'],people:[],overview:'',played:false,favorite:false,audio:[]};
  let selected:typeof movie|null=null,approved=false;const calls:string[]=[];
  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
-  const url=String(input);calls.push(url);let data:unknown;
+  const url=String(input);
+  if(url.startsWith('/api/playback?'))return new Response(JSON.stringify({targets:[],status:'idle',device:''}));calls.push(url);let data:unknown;
   if(url==='/api/me')data={id:'alice',name:'Alice'};
   else if(url==='/api/tonight')data={choice:selected?{code:'ROOM',version:0,partner:'Bob',movie:selected}:null};
   else if(url==='/api/tonight/end'){selected=null;data={ok:true,version:1};}

@@ -6,6 +6,7 @@ export async function ready() {
   if (!globalDb.movieMateSchema) globalDb.movieMateSchema = pool.query(`
     CREATE TABLE IF NOT EXISTS profiles (id text PRIMARY KEY, name text NOT NULL);
     ALTER TABLE profiles ADD COLUMN IF NOT EXISTS receive_recommendations boolean NOT NULL DEFAULT false;
+    ALTER TABLE profiles ADD COLUMN IF NOT EXISTS language text CHECK(language IN ('da','en'));
     CREATE TABLE IF NOT EXISTS recommendations (
       id text PRIMARY KEY, sender_id text NOT NULL REFERENCES profiles(id),
       recipient_id text NOT NULL REFERENCES profiles(id), item_id text NOT NULL,

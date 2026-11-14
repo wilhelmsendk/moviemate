@@ -7,7 +7,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 if(!process.env.TEST_DATABASE_URL)throw Error('Set TEST_DATABASE_URL to an isolated test database');
 const film=(Id,Name)=>({Id,Name,Type:'Movie',ProductionYear:2020,RunTimeTicks:60000000000,Genres:['Comedy'],People:[],UserData:{Played:false},ImageTags:{}});
 const catalogs={alice:[film('shared','Shared'),film('alice-only','Alice private'),film('alice-liked','Liked')],bob:[film('shared','Shared'),film('bob-only','Bob private')],charlie:[]};
-let destination;
+let destination,playing=false,paused=false,playCommands=0;
 const devices=new Map(),validTokens=new Set(),libraryReads=new Map();
 const fake=createServer(async(req,res)=>{
  const url=new URL(req.url,'http://fake');let user=(req.headers.authorization||'').match(/Token="([^"]+)"/)?.[1];
@@ -21,6 +21,13 @@ const fake=createServer(async(req,res)=>{
   return res.end(JSON.stringify({AccessToken:b.Username,User:{Id:b.Username,Name:b.Username}}));
  }
  if(!catalogs[user]||!validTokens.has(user)){res.writeHead(401);return res.end('{}');}
+ if(url.pathname==='/Sessions'){
+  assert.equal(url.searchParams.get('controllableByUserId'),user);
+  return res.end(JSON.stringify([{Id:`tv-${user}`,DeviceName:`${user} TV`,Client:'Moonfin',SupportsRemoteControl:true,NowPlayingItem:playing&&user==='alice'?{Id:'shared'}:null,PlayState:{IsPaused:paused}}]));
+ }
+ if(url.pathname.startsWith('/Sessions/')&&req.method==='POST'){
+  assert.equal(url.pathname,`/Sessions/tv-${user}/Playing`);assert.equal(url.searchParams.get('playCommand'),'PlayNow');assert.equal(url.searchParams.get('itemIds'),'shared');playCommands++;res.writeHead(204);return res.end();
+ }
  if(url.pathname==='/Items'){libraryReads.set(user,(libraryReads.get(user)||0)+1);return res.end(JSON.stringify({Items:catalogs[user],TotalRecordCount:catalogs[user].length}));}
  const id=url.pathname.split('/').at(-1),item=catalogs[user].find(m=>m.Id===id);
  if(!item){res.writeHead(404);return res.end('{}');}
@@ -40,6 +47,17 @@ try{
  assert.equal((await call('login',null,{username:'alice',password:'test-password'},'http://evil.invalid')).status,403);
  assert.equal((await call('login',null,{username:'alice',password:'wrong'})).status,401);
  const alice=await login('alice'),bob=await login('bob'),charlie=await login('charlie');
+ assert.equal((await call('preferences',alice,{language:'en'})).status,200);
+ assert.equal((await(await call('me',alice)).json()).language,'en');
+ assert.equal((await call('preferences',alice,{language:'de'})).status,400);
+ assert.equal((await call('playback/start',alice,{itemId:'shared',sessionId:'tv-bob'})).status,403);
+ assert.equal(playCommands,0);
+ assert.equal((await call('playback/start',alice,{itemId:'shared',sessionId:'tv-alice'})).status,200);
+ assert.equal((await(await call('playback?itemId=shared',alice)).json()).status,'idle','Accepted commands must not imply playback');
+ playing=true;
+ assert.equal((await(await call('playback?itemId=shared',alice)).json()).status,'playing');
+ paused=true;assert.equal((await(await call('playback?itemId=shared',alice)).json()).status,'paused');paused=false;
+ assert.equal((await call('playback?itemId=alice-only',bob)).status,403);
  assert.equal(devices.size,3,'Each user must authenticate as an independent Jellyfin device');
  assert.equal((await (await call('library',alice)).json()).movies.length,3);
  assert.equal((await call('rate',alice,{id:'alice-liked',value:3})).status,200);
@@ -66,6 +84,10 @@ try{
  const agreed=await call(`rooms/${code}/vote`,bob,{itemId:'shared',approved:true});assert.equal(agreed.status,200);assert.equal((await agreed.json()).selected.id,'shared');
  for(const cookie of [alice,bob]){const tonight=await(await call('tonight',cookie)).json();assert.equal(tonight.choice.movie.id,'shared');assert.equal(tonight.choice.code,code);}
  assert.equal((await(await call('tonight',charlie)).json()).choice,null);
+ assert.equal((await(await call(`playback?itemId=shared&code=${code}`,bob)).json()).status,'playing','Partners can see confirmed playback of their chosen film');
+ assert.equal((await(await call('playback?itemId=shared&code=invalid',bob)).json()).status,'idle');
+ playing=false;
+
 
  view=await(await call(`rooms/${code}`,alice)).json();assert.equal(view.selected.id,'shared');
  assert.equal((await call(`rooms/${code}/vote`,alice,{itemId:'shared',approved:false})).status,409);

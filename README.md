@@ -195,3 +195,11 @@ A mutual film choice now appears above the normal recommendations on **I aften**
 The home card stays until the choice is reset, replaced by a newer shared decision, or either participant chooses **Afslut filmvalget**. The two-hour room joining window does not hide an already confirmed choice. Finishing the choice clears it for both people; it does not mark the movie watched or start/stop TV playback. An outdated finish request is rejected if the room's decision has since changed. Reset keeps a timestamp marker so an older decision does not unexpectedly reappear on the home screen.
 
 The home screen polls only the small decision endpoint every two seconds while visible. It uses the same local library snapshots and never recomputes pair recommendations for that card. No new database tables or manual migration steps are required.
+
+### 0.1.6 — languages and remote playback
+
+Choose Danish or English on the login screen or in your profile. Your preference is saved per user. Film metadata and personal messages retain their original language.
+
+Open a film or your chosen movie-night card to select an active Jellyfin/Moonfin device and start playback. The TV app must be open and allow remote control; MovieMate cannot turn on the TV. An accepted command shows a waiting state, and only Jellyfin's matching now-playing session confirms “Playing now” or “Paused”. The shared choice stays visible until you explicitly finish it. Both participants can see playback of their selected film. No server administrator API key is required.
+
+If no device appears, open the TV app and check its remote-control settings and the user's Jellyfin permissions. Manual playback remains available. Physical client compatibility must be verified on your own device.

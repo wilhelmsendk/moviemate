@@ -1,3 +1,5 @@
+import {playbackSessions,playbackStatus} from '@/lib/playback';
+import {resolveLanguage,translate} from '@/lib/i18n';
 import { randomBytes, createHash } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { pool, ready } from '@/lib/db';
@@ -12,7 +14,6 @@ const pairCache=createAsyncCache<ReturnType<typeof pairRank>>(60000,48);
 const posterCache=createAsyncCache<{bytes:Uint8Array;type:string}>(600000,128);
 const failures = new Map<string,{n:number;until:number}>();
 class HttpError extends Error { constructor(public status:number,message:string) { super(message); } }
-const json = (data:unknown,status=200) => NextResponse.json(data,{status,headers:{'Cache-Control':'no-store'}});
 async function body(req:NextRequest) {
   if (Number(req.headers.get('content-length') || 0)>12000) throw new HttpError(413,'For stor forespørgsel');
   const text = await req.text();
@@ -22,9 +23,9 @@ async function body(req:NextRequest) {
 async function session(req:NextRequest) {
   const sid = req.cookies.get('mm_session')?.value;
   if (!sid) throw new HttpError(401,'Log ind for at fortsætte');
-  const result = await pool.query('SELECT s.*,p.name,p.receive_recommendations FROM sessions s JOIN profiles p ON p.id=s.user_id WHERE hash=$1 AND expires>now()',[hash(sid)]);
+  const result = await pool.query('SELECT s.*,p.name,p.receive_recommendations,p.language FROM sessions s JOIN profiles p ON p.id=s.user_id WHERE hash=$1 AND expires>now()',[hash(sid)]);
   if (!result.rows[0]) throw new HttpError(401,'Din session er udløbet. Log ind igen.');
-  return result.rows[0] as {hash:string;user_id:string;token:string;name:string;receive_recommendations:boolean};
+  return result.rows[0] as {hash:string;user_id:string;token:string;name:string;receive_recommendations:boolean;language:'da'|'en'|null};
 }
 async function state(userId:string) {
   const [r,d] = await Promise.all([
@@ -35,6 +36,11 @@ async function state(userId:string) {
 }
 async function handle(req:NextRequest) {
   const started=performance.now();
+  const language=resolveLanguage(req.headers.get('accept-language'));
+  const json=(data:any,status=200)=>{
+    if(data?.error)data={...data,error:translate(data.error,language)};
+    return NextResponse.json(data,{status,headers:{'Cache-Control':'no-store'}});
+  };
   try {
     if (req.method==='POST') {
       const origin=req.headers.get('origin');
@@ -69,11 +75,36 @@ async function handle(req:NextRequest) {
       return response;
     }
     const s=await session(req);
+    if(path==='playback'&&req.method==='GET'){
+      const itemId=req.nextUrl.searchParams.get('itemId')||'';
+      if(!(await library(s.user_id,s.token)).some(m=>m.id===itemId))throw new HttpError(403,'Filmen er ikke tilgængelig for dig');
+      const mine=await playbackSessions(s.user_id,s.token);
+      let status=playbackStatus(mine,itemId);
+      const code=req.nextUrl.searchParams.get('code');
+      if(code&&status.status==='idle'){
+        const room=await pool.query('SELECT CASE WHEN host_id=$1 THEN guest_id ELSE host_id END AS partner FROM rooms WHERE code=$2 AND selected_item_id=$3 AND (host_id=$1 OR guest_id=$1)',[s.user_id,code,itemId]);
+        if(room.rows[0]?.partner){
+          const partner=await pool.query('SELECT token FROM sessions WHERE user_id=$1 AND expires>now() ORDER BY expires DESC LIMIT 1',[room.rows[0].partner]);
+          if(partner.rows[0])try{status=playbackStatus(await playbackSessions(room.rows[0].partner,partner.rows[0].token),itemId);}catch{}
+        }
+      }
+      return json({...status,targets:mine.map(d=>({id:d.Id,name:d.DeviceName||d.Client||'Jellyfin'}))});
+    }
+    if(path==='playback/start'&&req.method==='POST'){
+      const b=await body(req);
+      if(typeof b.itemId!=='string'||typeof b.sessionId!=='string')throw new HttpError(400,'Ugyldig film');
+      const movie=await(await jelly(`/Users/${encodeURIComponent(s.user_id)}/Items/${encodeURIComponent(b.itemId)}`,s.token)).json();
+      if(movie.Type!=='Movie')throw new HttpError(403,'Filmen er ikke tilgængelig for dig');
+      const targets=await playbackSessions(s.user_id,s.token);
+      if(!targets.some(d=>d.Id===b.sessionId))throw new HttpError(403,'Enheden er ikke tilgængelig for fjernstyring');
+      await jelly(`/Sessions/${encodeURIComponent(b.sessionId)}/Playing?${new URLSearchParams({playCommand:'PlayNow',itemIds:b.itemId,startPositionTicks:'0'})}`,s.token,{method:'POST'});
+      return json({accepted:true});
+    }
     if (path==='logout' && req.method==='POST') {
       await pool.query('DELETE FROM sessions WHERE hash=$1',[s.hash]);
       const response=json({ok:true}); response.cookies.delete('mm_session');return response;
     }
-    if (path==='me' && req.method==='GET') return json({id:s.user_id,name:s.name,receiveRecommendations:s.receive_recommendations});
+    if (path==='me' && req.method==='GET') return json({id:s.user_id,name:s.name,receiveRecommendations:s.receive_recommendations,language:s.language});
     if(path==='tonight'&&req.method==='GET'){
       const result=await pool.query(`SELECT r.*,p.name AS partner_name FROM rooms r
         JOIN profiles p ON p.id=CASE WHEN r.host_id=$1 THEN r.guest_id ELSE r.host_id END
@@ -99,8 +130,10 @@ async function handle(req:NextRequest) {
     }
     if(path==='preferences'&&req.method==='POST'){
       const b=await body(req);
-      if(typeof b.receiveRecommendations!=='boolean')throw new HttpError(400,'Ugyldig indstilling');
-      await pool.query('UPDATE profiles SET receive_recommendations=$1 WHERE id=$2',[b.receiveRecommendations,s.user_id]);
+      if(b.receiveRecommendations===undefined&&b.language===undefined)throw new HttpError(400,'Ugyldig indstilling');
+      if(b.receiveRecommendations!==undefined&&typeof b.receiveRecommendations!=='boolean')throw new HttpError(400,'Ugyldig indstilling');
+      if(b.language!==undefined&&!['da','en'].includes(b.language))throw new HttpError(400,'Ugyldig indstilling');
+      await pool.query('UPDATE profiles SET receive_recommendations=COALESCE($1,receive_recommendations),language=COALESCE($2,language) WHERE id=$3',[b.receiveRecommendations??null,b.language??null,s.user_id]);
       return json({ok:true});
     }
     if(path.startsWith('movie/')&&req.method==='GET'){
@@ -184,7 +217,7 @@ async function handle(req:NextRequest) {
     }
     if (path==='rooms' && req.method==='POST') {
       const code=randomBytes(6).toString('hex').toUpperCase();
-      await pool.query('DELETE FROM rooms WHERE expires<now()');
+      await pool.query('DELETE FROM rooms WHERE expires<now() AND selected_at IS NULL');
       await pool.query("INSERT INTO rooms(code,host_id,expires) VALUES($1,$2,now()+interval '2 hours')",[code,s.user_id]);
       return json({code});
     }
