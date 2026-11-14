@@ -56,7 +56,24 @@ try{
  assert.equal((await call('rate',alice,{id:'alice-liked',value:null})).status,200);
  assert.equal(libraryReads.get('alice'),1,'Ratings and recommendations must reuse Alice metadata');
  assert.equal(libraryReads.get('bob'),1,'Private library cache must be scoped to Bob');
+ assert.deepEqual((await(await call('recipients',alice)).json()).users,[],'Receiving is opt-in');
+ assert.equal((await call('preferences',bob,{receiveRecommendations:true})).status,200);
+ assert.equal((await(await call('recipients',alice)).json()).users[0].id,'bob');
+ assert.equal((await call('recommendations/send',alice,{itemId:'shared',recipientId:'alice',note:''})).status,400);
+ assert.equal((await call('recommendations/send',alice,{itemId:'alice-only',recipientId:'bob',note:''})).status,403);
+ assert.equal((await call('recommendations/send',alice,{itemId:'shared',recipientId:'charlie',note:''})).status,409);
+ assert.equal((await call('recommendations/send',alice,{itemId:'shared',recipientId:'bob',note:'This is for you'})).status,200);
+ assert.equal((await call('recommendations/send',alice,{itemId:'shared',recipientId:'bob',note:''})).status,409);
+ const inbox=(await(await call('inbox',bob)).json()).messages;
+ assert.equal(inbox.length,1);assert.equal(inbox[0].movie.id,'shared');assert.equal(inbox[0].sender,'alice');assert.equal(inbox[0].note,'This is for you');
+ assert.equal((await(await call('inbox',alice)).json()).messages.length,0);
+ await call('inbox/read',alice,{id:inbox[0].id});
+ assert.equal((await(await call('inbox',bob)).json()).messages[0].read_at,null,'Another user cannot mark a private message read');
+ await call('inbox/read',bob,{id:inbox[0].id});
+ assert.ok((await(await call('inbox',bob)).json()).messages[0].read_at);
+ assert.equal((await(await call('movie/shared',bob)).json()).movie.title,'Shared');
+ assert.notEqual((await call('movie/alice-only',bob)).status,200);
  assert.equal((await call('logout',alice,{})).status,200);
  assert.equal((await call('me',alice)).status,401);
- console.log('PASS: per-session metadata reuse, independent Jellyfin sessions, login, CSRF, authorization, persistent ratings, isolation, room consent, intersection, snooze, undo and logout');
+ console.log('PASS: opt-in sharing, recipient access, private inbox, film details, per-session metadata reuse, independent Jellyfin sessions, login, CSRF, authorization, persistent ratings, isolation, room consent, intersection, snooze, undo and logout');
 }catch(e){console.error(output);throw e;}finally{child.kill('SIGTERM');await new Promise(r=>fake.close(r));}

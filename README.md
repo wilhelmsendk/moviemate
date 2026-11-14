@@ -2,7 +2,7 @@
 
 **Less scrolling. Better movie nights.** A mobile-first, self-hosted companion for the films already on your Jellyfin server.
 
-MovieMate is an early **0.1.2 alpha**, not a finished product. The interface is currently Danish. It does not download media, modify film files, change Jellyfin ratings, or claim that similarity scores are probabilities.
+MovieMate is an early **0.1.3 alpha**, not a finished product. The interface is currently Danish. It does not download media, modify film files, change Jellyfin ratings, or claim that similarity scores are probabilities.
 
 ## What works in this version
 
@@ -162,3 +162,18 @@ After upgrading from 0.1.0, both partners should log out of MovieMate and log ba
 - A bounded, 30-second per-session metadata cache coalesces simultaneous library reads. Failed reads are not cached and different users/tokens never share entries.
 - Rating authorization checks the same permission-scoped library snapshot, avoiding a fresh Jellyfin metadata request for every click.
 - Component tests simulate multiple ratings before the first save finishes, failed saves, and returning home without another library request. API tests verify metadata reuse and user isolation.
+
+## 0.1.3 film details and recommendations to friends
+
+“Se filmen nærmere” now opens a film-first detail view: full synopsis, cast, director, audio languages, and external trailer links when Jellyfin provides them. “Det bliver den her” confirms the choice with an instruction to start it on your TV; it does **not** start playback. Ratings open separately through “Bedøm filmen”; cards under “Min smag” still open the rating view directly.
+
+To recommend a film to another MovieMate user on the **same configured Jellyfin server**:
+
+1. Both people sign into MovieMate with separate Jellyfin accounts.
+2. The recipient opens their user button at the top and enables **Modtag filmanbefalinger**. This makes their username visible to other signed-in users in the recipient picker; ratings and history remain private. Receiving is off by default, including for existing accounts.
+3. Open a film, choose **Del med bruger**, select the recipient, and optionally add a message of up to 500 characters.
+4. The recipient opens **Indbakke** to view the recommendation and film details. This is an in-app inbox, not chat or a push notification.
+
+Sending checks that the film is accessible to both accounts. The recipient must have a non-expired MovieMate/Jellyfin session. The inbox hides films no longer visible to the recipient (subject to the existing 30-second metadata-cache window). Only the recipient can mark a recommendation read. Duplicate recommendations to the same person for the same film within a day are rejected; a basic per-sender daily limit of 20 applies.
+
+The update adds a profile preference and a recommendation table automatically, without deleting existing ratings or accounts. Take a database backup before updating as usual.

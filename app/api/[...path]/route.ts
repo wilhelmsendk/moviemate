@@ -1,7 +1,7 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { pool, ready } from '@/lib/db';
-import { jelly, library, JellyfinError } from '@/lib/jellyfin';
+import { jelly, library, mapMovie, JellyfinError } from '@/lib/jellyfin';
 import { recommend, pairRank } from '@/lib/recommend';
 import type { Rating } from '@/lib/types';
 export const runtime = 'nodejs';
@@ -19,9 +19,9 @@ async function body(req:NextRequest) {
 async function session(req:NextRequest) {
   const sid = req.cookies.get('mm_session')?.value;
   if (!sid) throw new HttpError(401,'Log ind for at fortsætte');
-  const result = await pool.query('SELECT s.*,p.name FROM sessions s JOIN profiles p ON p.id=s.user_id WHERE hash=$1 AND expires>now()',[hash(sid)]);
+  const result = await pool.query('SELECT s.*,p.name,p.receive_recommendations FROM sessions s JOIN profiles p ON p.id=s.user_id WHERE hash=$1 AND expires>now()',[hash(sid)]);
   if (!result.rows[0]) throw new HttpError(401,'Din session er udløbet. Log ind igen.');
-  return result.rows[0] as {hash:string;user_id:string;token:string;name:string};
+  return result.rows[0] as {hash:string;user_id:string;token:string;name:string;receive_recommendations:boolean};
 }
 async function state(userId:string) {
   const [r,d] = await Promise.all([
@@ -69,7 +69,53 @@ async function handle(req:NextRequest) {
       await pool.query('DELETE FROM sessions WHERE hash=$1',[s.hash]);
       const response=json({ok:true}); response.cookies.delete('mm_session');return response;
     }
-    if (path==='me' && req.method==='GET') return json({id:s.user_id,name:s.name});
+    if (path==='me' && req.method==='GET') return json({id:s.user_id,name:s.name,receiveRecommendations:s.receive_recommendations});
+    if(path==='preferences'&&req.method==='POST'){
+      const b=await body(req);
+      if(typeof b.receiveRecommendations!=='boolean')throw new HttpError(400,'Ugyldig indstilling');
+      await pool.query('UPDATE profiles SET receive_recommendations=$1 WHERE id=$2',[b.receiveRecommendations,s.user_id]);
+      return json({ok:true});
+    }
+    if(path.startsWith('movie/')&&req.method==='GET'){
+      const id=path.split('/')[1];
+      if(!/^[a-zA-Z0-9-]{1,80}$/.test(id))throw new HttpError(400,'Ugyldig film');
+      const data=await(await jelly(`/Users/${s.user_id}/Items/${id}`,s.token)).json();
+      if(data.Type!=='Movie')throw new HttpError(400,'Vælg en film');
+      return json({movie:mapMovie(data)});
+    }
+    if(path==='recipients'&&req.method==='GET'){
+      const users=await pool.query('SELECT id,name FROM profiles WHERE id<>$1 AND receive_recommendations=true ORDER BY name',[s.user_id]);
+      return json({users:users.rows});
+    }
+    if(path==='recommendations/send'&&req.method==='POST'){
+      const b=await body(req);
+      if(typeof b.itemId!=='string'||typeof b.recipientId!=='string'||typeof b.note!=='string'||b.note.length>500||b.recipientId===s.user_id)throw new HttpError(400,'Vælg en anden bruger og en besked på højst 500 tegn');
+      const ownMovies=await library(s.user_id,s.token);
+      if(!ownMovies.some(m=>m.id===b.itemId))throw new HttpError(403,'Filmen er ikke tilgængelig for dig');
+      const target=await pool.query('SELECT s.token FROM profiles p JOIN sessions s ON s.user_id=p.id WHERE p.id=$1 AND p.receive_recommendations=true AND s.expires>now() ORDER BY s.expires DESC LIMIT 1',[b.recipientId]);
+      if(!target.rows[0])throw new HttpError(409,'Brugeren skal logge ind i MovieMate og slå anbefalinger til');
+      let allowed;
+      try{allowed=(await library(b.recipientId,target.rows[0].token)).some(m=>m.id===b.itemId);}
+      catch{throw new HttpError(409,'Modtagerens Jellyfin-adgang kunne ikke bekræftes. Prøv igen senere.');}
+      if(!allowed)throw new HttpError(403,'Filmen kan ikke anbefales til denne bruger');
+      const recent=await pool.query("SELECT count(*)::int AS n FROM recommendations WHERE sender_id=$1 AND created>now()-interval '1 day'",[s.user_id]);
+      if(recent.rows[0].n>=20)throw new HttpError(429,'Du kan sende op til 20 anbefalinger om dagen');
+      const duplicate=await pool.query("SELECT id FROM recommendations WHERE sender_id=$1 AND recipient_id=$2 AND item_id=$3 AND created>now()-interval '1 day'",[s.user_id,b.recipientId,b.itemId]);
+      if(duplicate.rows.length)throw new HttpError(409,'Du har allerede anbefalet filmen til denne bruger i dag');
+      await pool.query('INSERT INTO recommendations(id,sender_id,recipient_id,item_id,note) VALUES($1,$2,$3,$4,$5)',[randomBytes(16).toString('hex'),s.user_id,b.recipientId,b.itemId,b.note.trim()]);
+      return json({ok:true});
+    }
+    if(path==='inbox'&&req.method==='GET'){
+      const [result,movies]=await Promise.all([pool.query('SELECT r.id,r.item_id,r.note,r.created,r.read_at,p.name AS sender FROM recommendations r JOIN profiles p ON p.id=r.sender_id WHERE r.recipient_id=$1 ORDER BY r.created DESC LIMIT 100',[s.user_id]),library(s.user_id,s.token)]);
+      const available=new Map(movies.map(m=>[m.id,m]));
+      return json({messages:result.rows.filter(r=>available.has(r.item_id)).map(r=>({id:r.id,note:r.note,created:r.created,read_at:r.read_at,sender:r.sender,movie:available.get(r.item_id)}))});
+    }
+    if(path==='inbox/read'&&req.method==='POST'){
+      const b=await body(req);
+      if(typeof b.id!=='string')throw new HttpError(400,'Ugyldig anbefaling');
+      await pool.query('UPDATE recommendations SET read_at=now() WHERE id=$1 AND recipient_id=$2',[b.id,s.user_id]);
+      return json({ok:true});
+    }
     if (path==='library' && req.method==='GET') {
       const [movies,own]=await Promise.all([library(s.user_id,s.token),state(s.user_id)]);
       return json({movies:movies.map(m=>({...m,rated:own.ratings.find(r=>r.item_id===m.id)?.value})),ratingCount:own.ratings.length});

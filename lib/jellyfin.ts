@@ -14,7 +14,7 @@ export async function jelly(path: string, token?: string, init: RequestInit = {}
   // Every authentication gets its own device; later calls identify that session by token.
   headers.set('Authorization', token
     ? `MediaBrowser Token="${token.replace(/["\r\n]/g,'')}"`
-    : `MediaBrowser Client="MovieMate", Device="MovieMate", DeviceId="moviemate-${randomUUID()}", Version="0.1.2"`);
+    : `MediaBrowser Client="MovieMate", Device="MovieMate", DeviceId="moviemate-${randomUUID()}", Version="0.1.3"`);
   if (init.body) headers.set('Content-Type','application/json');
   const res = await fetch(`${serverUrl()}${path}`, { ...init, headers, cache: 'no-store', signal: AbortSignal.timeout(20000), redirect: 'error' });
   if (!res.ok) throw new JellyfinError(res.status);
@@ -30,16 +30,23 @@ async function fetchLibrary(userId: string, token: string): Promise<Movie[]> {
   for (let start = 0; ; start += 500) {
     const query = new URLSearchParams({ userId, includeItemTypes:'Movie', recursive:'true', fields:'Genres,People,Overview,MediaStreams', enableUserData:'true', startIndex:String(start), limit:'500' });
     const data = await (await jelly(`/Items?${query}`,token)).json();
-    for (const m of data.Items || []) items.push({
+    for (const m of data.Items || []) items.push(mapMovie(m));
+    if (!data.Items?.length || items.length >= (data.TotalRecordCount ?? items.length)) break;
+    if (start >= 49500) throw new Error('Biblioteket overskrider grænsen på 50.000 film');
+  }
+  return items;
+}
+
+export function mapMovie(m:Record<string,any>):Movie {
+  return {
       id:m.Id, title:m.Name || 'Ukendt titel', year:m.ProductionYear || 0,
       minutes:Math.round((m.RunTimeTicks || 0)/600000000), genres:m.Genres || [],
       people:(m.People || []).map((p: {Id?:string;Name:string;Type:string}) => ({id:p.Id || '',name:p.Name,type:p.Type})),
       overview:m.Overview || '', played:!!m.UserData?.Played, favorite:!!m.UserData?.IsFavorite,
       imageTag:m.ImageTags?.Primary,
-      audio:[...new Set<string>((m.MediaStreams || []).filter((s:{Type:string}) => s.Type==='Audio').map((s:{Language?:string}) => s.Language || 'und'))]
-    });
-    if (!data.Items?.length || items.length >= (data.TotalRecordCount ?? items.length)) break;
-    if (start >= 49500) throw new Error('Biblioteket overskrider grænsen på 50.000 film');
-  }
-  return items;
+      audio:[...new Set<string>((m.MediaStreams || []).filter((s:{Type:string}) => s.Type==='Audio').map((s:{Language?:string}) => s.Language || 'und'))],
+    trailers:(m.RemoteTrailers||[]).filter((t:{Url?:string})=>{
+      try{const u=new URL(t.Url||'');return u.protocol==='https:'&&!u.username&&!u.password;}catch{return false;}
+    }).map((t:{Name?:string;Url:string})=>({name:t.Name||'Se trailer',url:t.Url}))
+  };
 }

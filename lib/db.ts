@@ -5,6 +5,13 @@ globalDb.movieMatePool = pool;
 export async function ready() {
   if (!globalDb.movieMateSchema) globalDb.movieMateSchema = pool.query(`
     CREATE TABLE IF NOT EXISTS profiles (id text PRIMARY KEY, name text NOT NULL);
+    ALTER TABLE profiles ADD COLUMN IF NOT EXISTS receive_recommendations boolean NOT NULL DEFAULT false;
+    CREATE TABLE IF NOT EXISTS recommendations (
+      id text PRIMARY KEY, sender_id text NOT NULL REFERENCES profiles(id),
+      recipient_id text NOT NULL REFERENCES profiles(id), item_id text NOT NULL,
+      note text NOT NULL DEFAULT '', created timestamptz NOT NULL DEFAULT now(), read_at timestamptz
+    );
+    CREATE INDEX IF NOT EXISTS recommendations_inbox ON recommendations(recipient_id,created DESC);
     CREATE TABLE IF NOT EXISTS sessions (hash text PRIMARY KEY, user_id text NOT NULL REFERENCES profiles(id), token text NOT NULL, expires timestamptz NOT NULL);
     CREATE TABLE IF NOT EXISTS ratings (user_id text NOT NULL REFERENCES profiles(id), item_id text NOT NULL, value integer NOT NULL CHECK(value IN (-2,1,3)), updated timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(user_id,item_id));
     CREATE TABLE IF NOT EXISTS dismissals (user_id text NOT NULL REFERENCES profiles(id), item_id text NOT NULL, expires timestamptz NOT NULL, PRIMARY KEY(user_id,item_id));
