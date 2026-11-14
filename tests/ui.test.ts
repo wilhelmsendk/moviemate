@@ -17,6 +17,7 @@ test('home navigation preserves library, and another film can be rated before th
  const response=(data:unknown,status=200)=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json'}});
  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
   const url=String(input);
+  if(url==='/api/tonight')return response({choice:null});
   if(url==='/api/me'){meCalls++;return response({id:'alice',name:'Alice'});}
   if(url==='/api/library'){libraryCalls++;return response({movies,ratingCount:0});}
   if(url.split('?')[0]==='/api/recommendations'){

@@ -2,7 +2,7 @@
 
 **Less scrolling. Better movie nights.** A mobile-first, self-hosted companion for the films already on your Jellyfin server.
 
-MovieMate is an early **0.1.4 alpha**, not a finished product. The interface is currently Danish. It does not download media, modify film files, change Jellyfin ratings, or claim that similarity scores are probabilities.
+MovieMate is an early **0.1.5 alpha**, not a finished product. The interface is currently Danish. It does not download media, modify film files, change Jellyfin ratings, or claim that similarity scores are probabilities.
 
 ## What works in this version
 
@@ -187,3 +187,11 @@ The update adds a profile preference and a recommendation table automatically, w
 - Pair rankings are cached separately from live votes. Poster thumbnails reuse a bounded per-user/session memory cache (128 images, at most 2 MB per image) and no longer request the same item metadata before every image. The library snapshot checks access; cache-based access changes can take up to ten minutes to appear.
 - Slow API requests over 1.5 seconds are logged by operation category and duration, without room codes, usernames, messages or tokens.
 - Tests cover persisted snapshots across a server restart, nonblocking background refresh, failure backoff, independent libraries, both clients observing the confirmed film, simultaneous approvals, unauthorized voters and reset.
+
+## 0.1.5 tonight's chosen film on the home screen
+
+A mutual film choice now appears above the normal recommendations on **I aften**, with its poster, title, partner and an **Åbn jeres valgte film** button. Both participants can see it, including after a browser reload or signing in again; the choice is restored from the database rather than depending on which tab is open.
+
+The home card stays until the choice is reset, replaced by a newer shared decision, or either participant chooses **Afslut filmvalget**. The two-hour room joining window does not hide an already confirmed choice. Finishing the choice clears it for both people; it does not mark the movie watched or start/stop TV playback. An outdated finish request is rejected if the room's decision has since changed. Reset keeps a timestamp marker so an older decision does not unexpectedly reappear on the home screen.
+
+The home screen polls only the small decision endpoint every two seconds while visible. It uses the same local library snapshots and never recomputes pair recommendations for that card. No new database tables or manual migration steps are required.

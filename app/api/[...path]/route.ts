@@ -74,6 +74,29 @@ async function handle(req:NextRequest) {
       const response=json({ok:true}); response.cookies.delete('mm_session');return response;
     }
     if (path==='me' && req.method==='GET') return json({id:s.user_id,name:s.name,receiveRecommendations:s.receive_recommendations});
+    if(path==='tonight'&&req.method==='GET'){
+      const result=await pool.query(`SELECT r.*,p.name AS partner_name FROM rooms r
+        JOIN profiles p ON p.id=CASE WHEN r.host_id=$1 THEN r.guest_id ELSE r.host_id END
+        WHERE (r.host_id=$1 OR r.guest_id=$1) AND r.selected_at IS NOT NULL
+        ORDER BY r.selected_at DESC,r.code DESC LIMIT 1`,[s.user_id]);
+      const selected=result.rows[0];
+      if(!selected?.selected_item_id)return json({choice:null});
+      const movie=(await library(s.user_id,s.token)).find(m=>m.id===selected.selected_item_id);
+      return json({choice:movie?{code:selected.code,version:Number(selected.revision),partner:selected.partner_name,movie}:null});
+    }
+    if(path==='tonight/end'&&req.method==='POST'){
+      const b=await body(req);
+      if(typeof b.code!=='string'||typeof b.itemId!=='string'||!Number.isSafeInteger(b.version))throw new HttpError(400,'Ugyldigt filmvalg');
+      const client=await pool.connect();
+      try{
+        await client.query('BEGIN');
+        const ended=await client.query('UPDATE rooms SET selected_item_id=NULL,revision=revision+1 WHERE code=$1 AND selected_item_id=$2 AND (host_id=$3 OR guest_id=$3) AND revision=$4 RETURNING revision',[b.code,b.itemId,s.user_id,b.version]);
+        if(!ended.rows.length)throw new HttpError(409,'Filmvalget er allerede afsluttet eller ændret');
+        await client.query('DELETE FROM room_votes WHERE code=$1',[b.code]);
+        await client.query('COMMIT');
+        return json({ok:true,version:Number(ended.rows[0].revision)});
+      }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+    }
     if(path==='preferences'&&req.method==='POST'){
       const b=await body(req);
       if(typeof b.receiveRecommendations!=='boolean')throw new HttpError(400,'Ugyldig indstilling');
@@ -192,7 +215,7 @@ async function handle(req:NextRequest) {
         if(!locked.rows[0])throw new HttpError(404,'Filmaftenen er udløbet');
         if(action==='reset'){
           await client.query('DELETE FROM room_votes WHERE code=$1',[code]);
-          await client.query('UPDATE rooms SET selected_item_id=NULL,selected_at=NULL WHERE code=$1',[code]);
+          await client.query('UPDATE rooms SET selected_item_id=NULL WHERE code=$1',[code]);
         }else{
           if(locked.rows[0].selected_item_id)throw new HttpError(409,'I har allerede valgt en film. Vælg en anden for at starte forfra.');
           if(b.approved)await client.query('INSERT INTO room_votes(code,user_id,item_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[code,s.user_id,b.itemId]);

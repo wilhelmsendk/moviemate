@@ -1,4 +1,5 @@
 // Uses an isolated PostgreSQL database supplied by TEST_DATABASE_URL. Never use production data.
+import {Client} from 'pg';
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
 import assert from 'node:assert/strict';
@@ -63,15 +64,28 @@ try{
  assert.equal((await call(`rooms/${code}/vote`,alice,{itemId:'shared',approved:true})).status,200);
  let view=await(await call(`rooms/${code}`,bob)).json();assert.equal(view.selected,null);assert.deepEqual(view.votes,[{itemId:'shared',mine:false,partner:true}]);
  const agreed=await call(`rooms/${code}/vote`,bob,{itemId:'shared',approved:true});assert.equal(agreed.status,200);assert.equal((await agreed.json()).selected.id,'shared');
+ for(const cookie of [alice,bob]){const tonight=await(await call('tonight',cookie)).json();assert.equal(tonight.choice.movie.id,'shared');assert.equal(tonight.choice.code,code);}
+ assert.equal((await(await call('tonight',charlie)).json()).choice,null);
+
  view=await(await call(`rooms/${code}`,alice)).json();assert.equal(view.selected.id,'shared');
  assert.equal((await call(`rooms/${code}/vote`,alice,{itemId:'shared',approved:false})).status,409);
  assert.equal((await call(`rooms/${code}/reset`,charlie,{})).status,404);
  assert.equal((await call(`rooms/${code}/reset`,bob,{})).status,200);
  view=await(await call(`rooms/${code}`,alice)).json();assert.equal(view.selected,null);assert.deepEqual(view.votes,[]);
+ assert.equal((await(await call('tonight',alice)).json()).choice,null,'Reset must clear the home card');
  const simultaneous=await Promise.all([call(`rooms/${code}/vote`,alice,{itemId:'shared',approved:true}),call(`rooms/${code}/vote`,bob,{itemId:'shared',approved:true})]);
  assert.ok(simultaneous.every(r=>r.status===200),'Concurrent approvals must serialize safely');
  const mutual=await(await call(`rooms/${code}`,bob)).json();assert.equal(mutual.selected.id,'shared');assert.ok(mutual.version>view.version);
- await call(`rooms/${code}/reset`,alice,{});
+ const homeChoice=(await(await call('tonight',alice)).json()).choice;
+ assert.equal(homeChoice.movie.id,'shared');
+ const dbClient=new Client({connectionString:process.env.TEST_DATABASE_URL});await dbClient.connect();
+ try{await dbClient.query("UPDATE rooms SET expires=now()-interval '1 hour' WHERE code=$1",[code]);}finally{await dbClient.end();}
+ assert.equal((await(await call('tonight',bob)).json()).choice.movie.id,'shared','Selection must outlive the joining window');
+ assert.equal((await call('tonight/end',charlie,{code,itemId:'shared',version:homeChoice.version})).status,409);
+ assert.equal((await call('tonight/end',alice,{code,itemId:'shared',version:homeChoice.version-1})).status,409);
+ assert.equal((await call('tonight/end',alice,{code,itemId:'shared',version:homeChoice.version})).status,200);
+ for(const cookie of [alice,bob])assert.equal((await(await call('tonight',cookie)).json()).choice,null);
+
  assert.equal((await call('dismiss',alice,{id:'shared'})).status,200);
  assert.ok(!(await (await call('recommendations',alice)).json()).movies.some(m=>m.id==='shared'));
  assert.equal((await call('rate',alice,{id:'alice-liked',value:null})).status,200);
@@ -96,5 +110,5 @@ try{
  assert.notEqual((await call('movie/alice-only',bob)).status,200);
  assert.equal((await call('logout',alice,{})).status,200);
  assert.equal((await call('me',alice)).status,401);
- console.log('PASS: persistent library across restart, mutual film selection and reset, opt-in sharing, recipient access, private inbox, film details, per-session metadata reuse, independent Jellyfin sessions, login, CSRF, authorization, persistent ratings, isolation, room consent, intersection, snooze, undo and logout');
+ console.log('PASS: selected home film, expired-room finish, stale/unauthorized finish rejection, persistent library across restart, mutual film selection and reset, opt-in sharing, recipient access, private inbox, film details, per-session metadata reuse, independent Jellyfin sessions, login, CSRF, authorization, persistent ratings, isolation, room consent, intersection, snooze, undo and logout');
 }catch(e){console.error(output);throw e;}finally{child.kill('SIGTERM');await new Promise(r=>fake.close(r));}
