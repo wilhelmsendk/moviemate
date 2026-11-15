@@ -1,3 +1,5 @@
+import {tmdbSettings,parseCredential,saveTmdbCredential,removeTmdbCredential} from '@/lib/tmdb-settings';
+import {testTmdbCredential} from '@/lib/tmdb';
 import {prepareImport,storedPreview,resolveImport} from '@/lib/external-import';
 import {tmdbConfigured} from '@/lib/tmdb';
 import {reconcileReviews,syncSharedReviews,closeReviewedNights} from '@/lib/reviews';
@@ -30,6 +32,9 @@ async function session(req:NextRequest) {
   const result = await pool.query('SELECT s.*,p.name,p.receive_recommendations,p.language,p.preferred_device FROM sessions s JOIN profiles p ON p.id=s.user_id WHERE hash=$1 AND expires>now()',[hash(sid)]);
   if (!result.rows[0]) throw new HttpError(401,'Din session er udløbet. Log ind igen.');
   return result.rows[0] as {hash:string;user_id:string;token:string;name:string;receive_recommendations:boolean;language:'da'|'en'|null;preferred_device:import('@/lib/playback').PreferredDevice|null};
+}
+async function canManageTmdb(s:{user_id:string;token:string}){
+ try{const user=await(await jelly(`/Users/${encodeURIComponent(s.user_id)}`,s.token,{},3000)).json();return user.Policy?.IsAdministrator===true;}catch{return false;}
 }
 async function state(userId:string) {
   const [r,d,h,e] = await Promise.all([
@@ -140,12 +145,21 @@ async function handle(req:NextRequest) {
       const b=await body(req);if(typeof b.itemId!=='string')throw new HttpError(400,'Ugyldig film');
       await pool.query('UPDATE watch_reviews SET dismissed=true,pending=false WHERE user_id=$1 AND item_id=$2',[s.user_id,b.itemId]);return json({ok:true});
     }
+    if(path==='settings/tmdb'&&req.method==='GET')return json({...await tmdbSettings(),canManage:await canManageTmdb(s)});
+    if(path==='settings/tmdb'&&req.method==='POST'){
+      if(!await canManageTmdb(s))throw new HttpError(403,'Kun en Jellyfin-administrator kan ændre serverens TMDB-opsætning.');
+      const b=await body(req);
+      if(b.action==='remove'){await removeTmdbCredential();return json({...await tmdbSettings(),canManage:true,ok:true});}
+      if(b.action!=='save'||typeof b.credential!=='string')throw new HttpError(400,'Ugyldige data');
+      try{const credential=parseCredential(b.credential);await testTmdbCredential(credential);await saveTmdbCredential(credential);return json({...await tmdbSettings(),canManage:true,ok:true});}
+      catch{throw new HttpError(400,'Nøglen kunne ikke testes og gemmes. Kontrollér nøglen og prøv igen.');}
+    }
     if(path==='import/status'&&req.method==='GET'){
-      const stats=await pool.query('SELECT count(*)::int AS count FROM external_tastes WHERE user_id=$1',[s.user_id]);return json({tmdbConfigured:tmdbConfigured(),externalCount:stats.rows[0].count});
+      const stats=await pool.query('SELECT count(*)::int AS count FROM external_tastes WHERE user_id=$1',[s.user_id]);return json({tmdbConfigured:await tmdbConfigured(),...await tmdbSettings(),canManage:await canManageTmdb(s),externalCount:stats.rows[0].count});
     }
     if(path==='import/preview'&&req.method==='POST'){
       const b=await body(req,2100000);if(typeof b.csv!=='string')throw new HttpError(400,'Ugyldig CSV-fil');
-      try{return json({...await prepareImport(s.user_id,b.csv,await library(s.user_id,s.token)),tmdbConfigured:tmdbConfigured()});}catch(e){throw new HttpError(400,e instanceof Error?e.message:'Ugyldig CSV-fil');}
+      try{return json({...await prepareImport(s.user_id,b.csv,await library(s.user_id,s.token)),tmdbConfigured:await tmdbConfigured()});}catch(e){throw new HttpError(400,e instanceof Error?e.message:'Ugyldig CSV-fil');}
     }
     if(path==='import/resolve'&&req.method==='POST'){
       const b=await body(req);if(typeof b.previewId!=='string'||typeof b.rowKey!=='string'||(b.selectedId!==undefined&&!Number.isSafeInteger(b.selectedId)))throw new HttpError(400,'Ugyldige data');

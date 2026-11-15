@@ -33,3 +33,9 @@ jobs:
         env:
           TEST_DATABASE_URL: postgresql://test:test@127.0.0.1:5432/moviemate_test
       - run: docker build -t moviemate:test .
+      - name: Check persistent secret volume
+        run: |
+          docker volume create moviemate-secrets-check
+          trap 'docker volume rm moviemate-secrets-check' EXIT
+          docker run --rm -v moviemate-secrets-check:/app/secrets --entrypoint node moviemate:test -e "require('node:fs').writeFileSync('/app/secrets/probe','persistent',{mode:384})"
+          docker run --rm -v moviemate-secrets-check:/app/secrets --entrypoint node moviemate:test -e "if(require('node:fs').readFileSync('/app/secrets/probe','utf8')!=='persistent')process.exit(1)"

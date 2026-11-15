@@ -105,7 +105,7 @@ It exercises real HTTP routes and PostgreSQL against a simulated Jellyfin server
 
 ## Backup and restore
 
-The `moviemate-db` Compose volume contains persistent app data. Keep `.env` privately with your backup. On Windows PowerShell, use a database-side dump and binary-safe `docker cp`:
+The `moviemate-db` Compose volume contains persistent app data. The `moviemate-secrets` volume contains the encryption key for TMDB credentials saved through the UI; back up and restore both volumes. If only that key is lost, re-enter the TMDB credential in the UI; ratings and other database data are unaffected. Keep `.env` privately with your backup. On Windows PowerShell, use a database-side dump and binary-safe `docker cp`:
 
 ```powershell
 docker compose exec -T db pg_dump -U moviemate -d moviemate -Fc -f /tmp/moviemate.dump
@@ -255,3 +255,11 @@ External likes/dislikes and weak watched-history signals influence the existing 
 **Preferred TV.** A successful playback command remembers the selected device per user in PostgreSQL. Devices are labeled by device name, client and logged-in user. Stable Jellyfin DeviceId restores the preferred device even when its session ID changes; clients without that ID are restored only when their name/client/user combination is unambiguous. An offline preferred device does not silently fall back to Chrome. Every start still checks fresh remote-control permissions. Forget preferred device removes the preference, and logout/login preserves it.
 
 The unmodified TMDB attribution wordmark in `public/tmdb.svg` is sourced from https://github.com/TmdbAPI/TMDB/blob/master/docs/logo/light.svg and remains a TMDB brand asset.
+
+### 0.1.15 — TMDB setup in the UI
+
+Under your profile's import panel, a Jellyfin administrator can paste a TMDB v3 API key or API Read Access Token and click Test and save. The server validates it against TMDB before persisting it. Saved credentials take precedence over the existing environment configuration; removing the saved credential falls back to that environment configuration if present. No rebuild or restart is required after saving a key. Server-side permissions are checked live against Jellyfin on every configuration change; ordinary users can use the configured metadata service but cannot change its credentials.
+
+The secret is authenticated/encrypted using AES-256-GCM in PostgreSQL. Its random master key lives in a separate `moviemate-secrets` volume, readable only by the application user. Credential fields are masked, cleared on success, and never returned by settings endpoints. Existing environment-based configuration remains supported. The UI now uses a connection-status panel and a collapsed About film information section containing the required TMDB attribution; environment-variable instructions and duplicate branding are removed from the import flow.
+
+Tests cover masking/clearing, administrator restrictions, malformed credentials, ciphertext tampering, a fresh process reading persisted encryption keys, environment fallback, and Docker's non-root access to the persistent secrets volume across two containers.

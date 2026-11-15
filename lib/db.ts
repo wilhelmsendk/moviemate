@@ -18,6 +18,7 @@ export async function ready() {
     CREATE TABLE IF NOT EXISTS external_metadata (
       external_id text PRIMARY KEY, movie jsonb NOT NULL, updated timestamptz NOT NULL DEFAULT now()
     );
+    CREATE TABLE IF NOT EXISTS app_settings (key text PRIMARY KEY, value jsonb NOT NULL, updated timestamptz NOT NULL DEFAULT now());
     CREATE TABLE IF NOT EXISTS recommendations (
       id text PRIMARY KEY, sender_id text NOT NULL REFERENCES profiles(id),
       recipient_id text NOT NULL REFERENCES profiles(id), item_id text NOT NULL,

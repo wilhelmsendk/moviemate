@@ -29,6 +29,7 @@ const fake=createServer(async(req,res)=>{
  if(url.pathname.startsWith('/Sessions/')&&req.method==='POST'){
   assert.equal(url.pathname,`/Sessions/tv-${user}/Playing`);assert.equal(url.searchParams.get('playCommand'),'PlayNow');assert.equal(url.searchParams.get('itemIds'),'shared');playCommands++;res.writeHead(204);return res.end();
  }
+ if(/^\/Users\/[^/]+$/.test(url.pathname))return res.end(JSON.stringify({Id:user,Policy:{IsAdministrator:user==='alice'}}));
  if(url.pathname==='/Items'){
   if(url.searchParams.has('audioLanguages')){assert.equal(url.searchParams.get('userId'),user);assert.equal(url.searchParams.get('audioLanguages'),'dan,da');const items=catalogs[user].filter(m=>m.Id==='shared');return res.end(JSON.stringify({Items:items,TotalRecordCount:items.length}));}
   if(url.searchParams.get('fields')==='ProductionLocations'){assert.equal(url.searchParams.get('userId'),user);return res.end(JSON.stringify({Items:catalogs[user].map(m=>({...m,ProductionLocations:m.Id==='alice-only'?['Denmark']:['USA']})),TotalRecordCount:catalogs[user].length}));}
@@ -49,9 +50,16 @@ try{
  let up=false;for(let i=0;i<100;i++){try{if((await call('health')).ok){up=true;break;}}catch{}await delay(100);}
  assert.ok(up,output);
  assert.equal((await call('me')).status,401);
+ assert.equal((await call('settings/tmdb')).status,401);
  assert.equal((await call('login',null,{username:'alice',password:'test-password'},'http://evil.invalid')).status,403);
  assert.equal((await call('login',null,{username:'alice',password:'wrong'})).status,401);
  const alice=await login('alice'),bob=await login('bob'),charlie=await login('charlie');
+ assert.equal((await(await call('settings/tmdb',alice)).json()).canManage,true);
+ assert.equal((await(await call('settings/tmdb',bob)).json()).canManage,false);
+ assert.equal((await call('settings/tmdb',bob,{action:'save',credential:'test-only-forbidden-token'})).status,403);
+ assert.equal((await call('settings/tmdb',bob,{action:'remove'})).status,403);
+ assert.equal((await call('settings/tmdb',alice,{action:'save',credential:'bad'})).status,400);
+ assert.equal((await call('settings/tmdb',alice,{action:'remove'})).status,200);
  const externalPreview=await(await call('import/preview',alice,{csv:'Const,Your Rating,Title,Year,Genres,Directors\ntt999999,10,Outside Library,2000,Comedy,Jane Director'})).json();
  assert.equal(externalPreview.rows[0].externalId,'imdb:tt999999');
  assert.equal((await call('import/commit',bob,{previewId:externalPreview.previewId,rows:[{rowKey:externalPreview.rows[0].rowKey}]})).status,400,'Preview ownership must be enforced');
