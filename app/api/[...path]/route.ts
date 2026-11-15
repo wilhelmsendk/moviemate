@@ -99,7 +99,7 @@ async function handle(req:NextRequest) {
         await pool.query('INSERT INTO watch_reviews(user_id,item_id,progress,play_owner,session_id,confirmed) VALUES($1,$2,$3,$4,$5,true) ON CONFLICT(user_id,item_id) DO UPDATE SET progress=GREATEST(watch_reviews.progress,excluded.progress),last_seen=now(),play_owner=excluded.play_owner,session_id=excluded.session_id,confirmed=true',[s.user_id,itemId,progress,observer,active?.Id]);
       }else await pool.query('UPDATE watch_reviews SET pending=true WHERE user_id=$1 AND item_id=$2 AND progress>=0.85 AND dismissed=false',[s.user_id,itemId]);
       if(code&&status.status==='idle')await syncSharedReviews(s.user_id);
-      const review=await pool.query('SELECT confirmed,pending FROM watch_reviews WHERE user_id=$1 AND item_id=$2',[s.user_id,itemId]);
+      const review=await pool.query('SELECT (confirmed OR (pending AND progress>=0.85)) AS confirmed,pending FROM watch_reviews WHERE user_id=$1 AND item_id=$2',[s.user_id,itemId]);
       return json({...status,...(status.status==='idle'&&review.rows[0]?.confirmed?{status:'stopped'}:{}),reviewPending:!!review.rows[0]?.pending,targets:mine.map(d=>({id:d.Id,name:d.DeviceName||d.Client||'Jellyfin'}))});
     }
     if(path==='playback/start'&&req.method==='POST'){

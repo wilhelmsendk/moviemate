@@ -188,6 +188,15 @@ try{
  assert.equal((await(await call('library',bob)).json()).movies.find(m=>m.id==='shared').rated,undefined,'Skipping does not invent a rating');
  await call('rate',alice,{id:'shared',value:null});
  assert.equal((await(await call('tonight',alice)).json()).choice,null,'Removing a rating must not resurrect an archived choice');
+ // Legacy rows from before the confirmed flag: real completed progress + pending review still proves the finish.
+ const legacyCode=(await(await call('rooms',alice,{})).json()).code;
+ await call('rooms/join',bob,{code:legacyCode});
+ await call(`rooms/${legacyCode}/vote`,alice,{itemId:'shared',approved:true});await call(`rooms/${legacyCode}/vote`,bob,{itemId:'shared',approved:true});
+ await call('rate',alice,{id:'shared',value:1});await call('rate',bob,{id:'shared',value:1});
+ const legacyDb=new Client({connectionString:process.env.TEST_DATABASE_URL});await legacyDb.connect();
+ try{await legacyDb.query("UPDATE watch_reviews SET progress=0.99789894,pending=true,dismissed=false,confirmed=false,last_seen=now() WHERE user_id IN('alice','bob') AND item_id='shared'");}finally{await legacyDb.end();}
+ for(const cookie of [alice,bob])assert.equal((await(await call('tonight',cookie)).json()).choice,null,'Legacy completed rows must close even when confirmed defaults to false');
+ await call('rate',alice,{id:'shared',value:null});await call('rate',bob,{id:'shared',value:null});
  assert.equal((await call('dismiss',alice,{id:'shared'})).status,200);
  assert.ok(!(await (await call('recommendations',alice)).json()).movies.some(m=>m.id==='shared'));
  assert.equal((await call('rate',alice,{id:'alice-liked',value:null})).status,200);

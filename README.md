@@ -239,3 +239,7 @@ A shared movie night now checks completion using the playback owner's watched st
 ### 0.1.12 — finish a reviewed shared movie night
 
 The selected film is automatically archived after confirmed completion once both participants have either rated it during that movie night or skipped the review. The first response does not remove the other participant's question. The home and shared-night polls reconcile existing completed nights too. Closing clears votes and increments the shared revision while preserving the selection timestamp as a tombstone, so older cards cannot return. Ratings remain intact and private. Rating an uncompleted film alone does not close the night; Finish selection remains available manually.
+
+### 0.1.13 — accept legacy completion records
+
+Older observations can contain pending=true and >=85% recorded progress while confirmed=false, because the confirmation field was introduced later. These are valid completed observations and now satisfy automatic shared-night closure after both participants respond. They also display as stopped playback and propagate confirmation to the consenting partner correctly. Low-progress, unconfirmed attempts still do not imply completion. Regression coverage reproduces both users rated with progress 0.99789894, pending=true and confirmed=false.

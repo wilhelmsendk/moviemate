@@ -5,7 +5,7 @@ export function reviewComplete(progress:number,baselinePlayed:boolean|null,playe
 // Share only the physical viewing event of a mutually selected film, never ratings.
 export async function syncSharedReviews(userId:string){
  await pool.query(`INSERT INTO watch_reviews(user_id,item_id,progress,play_owner,session_id,baseline_played,confirmed,pending,last_seen)
-   SELECT DISTINCT ON (w.item_id) $1,w.item_id,w.progress,w.play_owner,w.session_id,w.baseline_played,w.confirmed,w.pending,w.last_seen
+   SELECT DISTINCT ON (w.item_id) $1,w.item_id,w.progress,w.play_owner,w.session_id,w.baseline_played,(w.confirmed OR (w.pending AND w.progress>=0.85)),w.pending,w.last_seen
    FROM rooms r JOIN watch_reviews w ON w.user_id=CASE WHEN r.host_id=$1 THEN r.guest_id ELSE r.host_id END AND w.item_id=r.selected_item_id
    WHERE (r.host_id=$1 OR r.guest_id=$1) AND r.selected_item_id IS NOT NULL AND w.last_seen>=r.selected_at AND w.user_id=w.play_owner
      AND (w.confirmed OR w.pending OR w.baseline_played IS NOT NULL)
@@ -46,7 +46,7 @@ export async function closeReviewedNights(userId:string){
    UPDATE rooms r SET selected_item_id=NULL,revision=revision+1
    WHERE (r.host_id=$1 OR r.guest_id=$1) AND r.selected_item_id IS NOT NULL AND r.guest_id IS NOT NULL
      AND EXISTS(SELECT 1 FROM watch_reviews w WHERE w.item_id=r.selected_item_id
-       AND w.user_id IN(r.host_id,r.guest_id) AND w.last_seen>=r.selected_at AND w.confirmed=true AND (w.pending=true OR w.dismissed=true))
+       AND w.user_id IN(r.host_id,r.guest_id) AND w.last_seen>=r.selected_at AND (w.confirmed=true OR w.progress>=0.85) AND (w.pending=true OR w.dismissed=true))
      AND NOT EXISTS(SELECT 1 FROM unnest(ARRAY[r.host_id,r.guest_id]) AS viewer(id)
        WHERE NOT EXISTS(SELECT 1 FROM ratings v WHERE v.user_id=viewer.id AND v.item_id=r.selected_item_id AND v.updated>=r.selected_at)
          AND NOT EXISTS(SELECT 1 FROM watch_reviews w WHERE w.user_id=viewer.id AND w.item_id=r.selected_item_id AND w.last_seen>=r.selected_at AND w.dismissed=true))
