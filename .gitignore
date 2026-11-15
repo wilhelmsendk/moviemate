@@ -5,3 +5,7 @@ node_modules/
 !.env.example
 *.tsbuildinfo
 data/
+
+# Local credential key material must never enter source control or build layers.
+data/
+secrets/
