@@ -235,3 +235,7 @@ Confirmed playback now changes to “Playback has ended”, with a Play again ac
 ### 0.1.11 — shared completion, private reviews
 
 A shared movie night now checks completion using the playback owner's watched state, rather than expecting Jellyfin to mark both viewers watched when the TV is signed in as only one of them. Starting from the details modal also resolves the selected shared room. Existing selected nights can recover a missing participant tracking row from the partner's playback record; restarting the film is not required. Completion and stopped status are shared only between the two participants who selected that film. Ratings remain individual, existing ratings suppress duplicate prompts, and skipping a review is preserved.
+
+### 0.1.12 — finish a reviewed shared movie night
+
+The selected film is automatically archived after confirmed completion once both participants have either rated it during that movie night or skipped the review. The first response does not remove the other participant's question. The home and shared-night polls reconcile existing completed nights too. Closing clears votes and increments the shared revision while preserving the selection timestamp as a tombstone, so older cards cannot return. Ratings remain intact and private. Rating an uncompleted film alone does not close the night; Finish selection remains available manually.

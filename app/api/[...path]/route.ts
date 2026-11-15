@@ -1,4 +1,4 @@
-import {reconcileReviews,syncSharedReviews} from '@/lib/reviews';
+import {reconcileReviews,syncSharedReviews,closeReviewedNights} from '@/lib/reviews';
 import {libraryFacet} from '@/lib/library-facets';
 import {importRows,previewImport} from '@/lib/import-history';
 import {playbackSessions,playbackStatus} from '@/lib/playback';
@@ -156,6 +156,7 @@ async function handle(req:NextRequest) {
     }
     if (path==='me' && req.method==='GET') return json({id:s.user_id,name:s.name,receiveRecommendations:s.receive_recommendations,language:s.language});
     if(path==='tonight'&&req.method==='GET'){
+      await closeReviewedNights(s.user_id);
       const result=await pool.query(`SELECT r.*,p.name AS partner_name FROM rooms r
         JOIN profiles p ON p.id=CASE WHEN r.host_id=$1 THEN r.guest_id ELSE r.host_id END
         WHERE (r.host_id=$1 OR r.guest_id=$1) AND r.selected_at IS NOT NULL
@@ -319,6 +320,7 @@ async function handle(req:NextRequest) {
       return json({ok:true,selected,version});
     }
     if (path.startsWith('rooms/') && req.method==='GET') {
+      await closeReviewedNights(s.user_id);
       const code=path.split('/')[1];
       const r=await pool.query('SELECT * FROM rooms WHERE code=$1 AND expires>now() AND (host_id=$2 OR guest_id=$2)',[code,s.user_id]);
       const room=r.rows[0]; if (!room) throw new HttpError(404,'Filmaftenen findes ikke længere');

@@ -169,6 +169,25 @@ try{
  assert.equal((await call('tonight/end',alice,{code,itemId:'shared',version:homeChoice.version})).status,200);
  for(const cookie of [alice,bob])assert.equal((await(await call('tonight',cookie)).json()).choice,null);
 
+ // Completed shared nights stay visible until both participants respond, then disappear everywhere.
+ const finalCode=(await(await call('rooms',alice,{})).json()).code;
+ await call('rooms/join',bob,{code:finalCode});
+ await call(`rooms/${finalCode}/vote`,alice,{itemId:'shared',approved:true});
+ await call(`rooms/${finalCode}/vote`,bob,{itemId:'shared',approved:true});
+ await call('rate',alice,{id:'shared',value:3});await call('rate',bob,{id:'shared',value:1});
+ assert.equal((await(await call('tonight',alice)).json()).choice.movie.id,'shared','Ratings alone must not imply that playback completed');
+ await call('rate',bob,{id:'shared',value:null});
+ const completionDb=new Client({connectionString:process.env.TEST_DATABASE_URL});await completionDb.connect();
+ try{await completionDb.query("INSERT INTO watch_reviews(user_id,item_id,progress,play_owner,confirmed,pending,dismissed,last_seen) VALUES('alice','shared',1,'alice',true,true,false,now()) ON CONFLICT(user_id,item_id) DO UPDATE SET progress=1,confirmed=true,pending=true,dismissed=false,last_seen=now()");await completionDb.query("DELETE FROM watch_reviews WHERE user_id='bob' AND item_id='shared'");}finally{await completionDb.end();}
+ assert.equal((await(await call('tonight',alice)).json()).choice.movie.id,'shared','First rating must leave the choice and partner review intact');
+ assert.equal((await(await call('reviews',bob)).json()).movies[0].id,'shared');
+ await call('reviews/dismiss',bob,{itemId:'shared'});
+ for(const cookie of [alice,bob])assert.equal((await(await call('tonight',cookie)).json()).choice,null,'Both responded: remove the shared card for both');
+ const closed=await(await call(`rooms/${finalCode}`,alice)).json();assert.equal(closed.selected,null);assert.deepEqual(closed.votes,[]);
+ assert.equal((await(await call('library',alice)).json()).movies.find(m=>m.id==='shared').rated,3,'Closing preserves ratings');
+ assert.equal((await(await call('library',bob)).json()).movies.find(m=>m.id==='shared').rated,undefined,'Skipping does not invent a rating');
+ await call('rate',alice,{id:'shared',value:null});
+ assert.equal((await(await call('tonight',alice)).json()).choice,null,'Removing a rating must not resurrect an archived choice');
  assert.equal((await call('dismiss',alice,{id:'shared'})).status,200);
  assert.ok(!(await (await call('recommendations',alice)).json()).movies.some(m=>m.id==='shared'));
  assert.equal((await call('rate',alice,{id:'alice-liked',value:null})).status,200);

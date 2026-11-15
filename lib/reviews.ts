@@ -38,3 +38,18 @@ export async function reconcileReviews(userId:string){
   if(reviewComplete(watch.progress,watch.baseline_played,played))await pool.query('UPDATE watch_reviews SET pending=true,confirmed=true WHERE user_id=$1 AND item_id=$2',[userId,watch.item_id]);
  }catch{/* A failed server read must never imply completion. */}}));
 }
+
+// Close only after confirmed completion and a separate response from each participant.
+// Preserve selected_at as a tombstone so an older night's card cannot reappear.
+export async function closeReviewedNights(userId:string){
+ await pool.query(`WITH closed AS (
+   UPDATE rooms r SET selected_item_id=NULL,revision=revision+1
+   WHERE (r.host_id=$1 OR r.guest_id=$1) AND r.selected_item_id IS NOT NULL AND r.guest_id IS NOT NULL
+     AND EXISTS(SELECT 1 FROM watch_reviews w WHERE w.item_id=r.selected_item_id
+       AND w.user_id IN(r.host_id,r.guest_id) AND w.last_seen>=r.selected_at AND w.confirmed=true AND (w.pending=true OR w.dismissed=true))
+     AND NOT EXISTS(SELECT 1 FROM unnest(ARRAY[r.host_id,r.guest_id]) AS viewer(id)
+       WHERE NOT EXISTS(SELECT 1 FROM ratings v WHERE v.user_id=viewer.id AND v.item_id=r.selected_item_id AND v.updated>=r.selected_at)
+         AND NOT EXISTS(SELECT 1 FROM watch_reviews w WHERE w.user_id=viewer.id AND w.item_id=r.selected_item_id AND w.last_seen>=r.selected_at AND w.dismissed=true))
+   RETURNING r.code
+ ) DELETE FROM room_votes WHERE code IN(SELECT code FROM closed)`,[userId]);
+}
