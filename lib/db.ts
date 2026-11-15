@@ -36,6 +36,8 @@ export async function ready() {
     );
     ALTER TABLE watch_reviews ADD COLUMN IF NOT EXISTS play_owner text;
     ALTER TABLE watch_reviews ADD COLUMN IF NOT EXISTS session_id text;
+    ALTER TABLE watch_reviews ADD COLUMN IF NOT EXISTS baseline_played boolean;
+    ALTER TABLE watch_reviews ADD COLUMN IF NOT EXISTS confirmed boolean NOT NULL DEFAULT false;
     CREATE TABLE IF NOT EXISTS room_votes (
       code text NOT NULL REFERENCES rooms(code) ON DELETE CASCADE,
       user_id text NOT NULL REFERENCES profiles(id), item_id text NOT NULL,

@@ -1,3 +1,4 @@
+import {reconcileReviews} from '@/lib/reviews';
 import {libraryFacet} from '@/lib/library-facets';
 import {importRows,previewImport} from '@/lib/import-history';
 import {playbackSessions,playbackStatus} from '@/lib/playback';
@@ -95,9 +96,10 @@ async function handle(req:NextRequest) {
       if(status.status!=='idle'){
         const active=observed.find(d=>d.NowPlayingItem?.Id===itemId);
         const progress=movie.minutes>0?Math.min(1,(active?.PlayState?.PositionTicks||0)/(movie.minutes*600000000)):0;
-        await pool.query('INSERT INTO watch_reviews(user_id,item_id,progress,play_owner,session_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT(user_id,item_id) DO UPDATE SET progress=GREATEST(watch_reviews.progress,excluded.progress),last_seen=now(),play_owner=excluded.play_owner,session_id=excluded.session_id',[s.user_id,itemId,progress,observer,active?.Id]);
+        await pool.query('INSERT INTO watch_reviews(user_id,item_id,progress,play_owner,session_id,confirmed) VALUES($1,$2,$3,$4,$5,true) ON CONFLICT(user_id,item_id) DO UPDATE SET progress=GREATEST(watch_reviews.progress,excluded.progress),last_seen=now(),play_owner=excluded.play_owner,session_id=excluded.session_id,confirmed=true',[s.user_id,itemId,progress,observer,active?.Id]);
       }else await pool.query('UPDATE watch_reviews SET pending=true WHERE user_id=$1 AND item_id=$2 AND progress>=0.85 AND dismissed=false',[s.user_id,itemId]);
-      return json({...status,targets:mine.map(d=>({id:d.Id,name:d.DeviceName||d.Client||'Jellyfin'}))});
+      const review=await pool.query('SELECT confirmed,pending FROM watch_reviews WHERE user_id=$1 AND item_id=$2',[s.user_id,itemId]);
+      return json({...status,...(status.status==='idle'&&review.rows[0]?.confirmed?{status:'stopped'}:{}),reviewPending:!!review.rows[0]?.pending,targets:mine.map(d=>({id:d.Id,name:d.DeviceName||d.Client||'Jellyfin'}))});
     }
     if(path==='playback/start'&&req.method==='POST'){
       const b=await body(req);
@@ -106,21 +108,21 @@ async function handle(req:NextRequest) {
       if(movie.Type!=='Movie')throw new HttpError(403,'Filmen er ikke tilgængelig for dig');
       const targets=await playbackSessions(s.user_id,s.token,true);
       if(!targets.some(d=>d.Id===b.sessionId))throw new HttpError(403,'Enheden er ikke tilgængelig for fjernstyring');
+      const participants=[{id:s.user_id,played:!!movie.UserData?.Played}];
+      if(typeof b.code==='string'){
+        const room=await pool.query('SELECT CASE WHEN host_id=$1 THEN guest_id ELSE host_id END AS partner FROM rooms WHERE code=$2 AND selected_item_id=$3 AND (host_id=$1 OR guest_id=$1)',[s.user_id,b.code,b.itemId]);
+        if(room.rows[0]?.partner)try{
+          const partnerId=room.rows[0].partner;
+          const partner=await pool.query('SELECT token FROM sessions WHERE user_id=$1 AND expires>now() ORDER BY expires DESC LIMIT 1',[partnerId]);
+          if(partner.rows[0]){const item=await(await jelly(`/Users/${encodeURIComponent(partnerId)}/Items/${encodeURIComponent(b.itemId)}`,partner.rows[0].token,{},3000)).json();if(item.Type==='Movie')participants.push({id:partnerId,played:!!item.UserData?.Played});}
+        }catch{}
+      }
       await jelly(`/Sessions/${encodeURIComponent(b.sessionId)}/Playing?${new URLSearchParams({playCommand:'PlayNow',itemIds:b.itemId,startPositionTicks:'0'})}`,s.token,{method:'POST'});
+      for(const participant of participants)await pool.query('INSERT INTO watch_reviews(user_id,item_id,progress,play_owner,session_id,baseline_played) VALUES($1,$2,0,$3,$4,$5) ON CONFLICT(user_id,item_id) DO UPDATE SET progress=0,pending=false,dismissed=false,confirmed=false,play_owner=excluded.play_owner,session_id=excluded.session_id,baseline_played=excluded.baseline_played,last_seen=now()',[participant.id,b.itemId,s.user_id,b.sessionId,participant.played]);
       return json({accepted:true});
     }
     if(path==='reviews'&&req.method==='GET'){
-      const watching=await pool.query('SELECT w.* FROM watch_reviews w WHERE w.user_id=$1 AND w.progress>=0.85 AND w.pending=false AND w.dismissed=false AND w.play_owner IS NOT NULL AND NOT EXISTS(SELECT 1 FROM ratings r WHERE r.user_id=w.user_id AND r.item_id=w.item_id) ORDER BY w.last_seen DESC LIMIT 5',[s.user_id]);
-      const observed=new Map<string,Awaited<ReturnType<typeof playbackSessions>>>();
-      for(const watch of watching.rows){try{
-        if(!observed.has(watch.play_owner)){
-          const actor=await pool.query('SELECT token FROM sessions WHERE user_id=$1 AND expires>now() ORDER BY expires DESC LIMIT 1',[watch.play_owner]);
-          if(!actor.rows[0])continue;
-          observed.set(watch.play_owner,await playbackSessions(watch.play_owner,actor.rows[0].token));
-        }
-        if(!observed.get(watch.play_owner)!.some(d=>d.Id===watch.session_id&&d.NowPlayingItem?.Id===watch.item_id))await pool.query('UPDATE watch_reviews SET pending=true WHERE user_id=$1 AND item_id=$2',[s.user_id,watch.item_id]);
-      }catch{} }
-
+      await reconcileReviews(s.user_id);
       const reviews=await pool.query('SELECT w.item_id FROM watch_reviews w WHERE w.user_id=$1 AND w.pending=true AND w.dismissed=false AND NOT EXISTS(SELECT 1 FROM ratings r WHERE r.user_id=w.user_id AND r.item_id=w.item_id) ORDER BY w.last_seen DESC LIMIT 5',[s.user_id]);
       const movies=reviews.rows.length?await library(s.user_id,s.token):[];
       return json({movies:reviews.rows.map(r=>movies.find(m=>m.id===r.item_id)).filter(Boolean)});

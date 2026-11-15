@@ -7,7 +7,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 if(!process.env.TEST_DATABASE_URL)throw Error('Set TEST_DATABASE_URL to an isolated test database');
 const film=(Id,Name)=>({Id,Name,Type:'Movie',ProductionYear:2020,RunTimeTicks:60000000000,Genres:['Comedy'],People:[],UserData:{Played:false},ImageTags:{}});
 const catalogs={alice:[film('shared','Shared'),film('alice-only','Alice private'),film('alice-liked','Liked')],bob:[film('shared','Shared'),film('bob-only','Bob private')],charlie:[]};
-let destination,playing=false,paused=false,playCommands=0,position=0,holdLibrary=false,releaseLibrary;
+let destination,playing=false,paused=false,playCommands=0,position=0,holdLibrary=false,releaseLibrary,serverPlayed=false;
 const libraryGate=new Promise(resolve=>{releaseLibrary=resolve;});
 const devices=new Map(),validTokens=new Set(),libraryReads=new Map();
 const fake=createServer(async(req,res)=>{
@@ -36,7 +36,7 @@ const fake=createServer(async(req,res)=>{
  }
  const id=url.pathname.split('/').at(-1),item=catalogs[user].find(m=>m.Id===id);
  if(!item){res.writeHead(404);return res.end('{}');}
- return res.end(JSON.stringify(item));
+ return res.end(JSON.stringify(item.Id==='shared'?{...item,UserData:{...item.UserData,Played:serverPlayed}}:item));
 });
 await new Promise(r=>fake.listen(0,'127.0.0.1',r));
 destination=`http://127.0.0.1:${fake.address().port}`;
@@ -104,7 +104,7 @@ try{
  for(const cookie of [alice,bob]){const tonight=await(await call('tonight',cookie)).json();assert.equal(tonight.choice.movie.id,'shared');assert.equal(tonight.choice.code,code);}
  assert.equal((await(await call('tonight',charlie)).json()).choice,null);
  assert.equal((await(await call(`playback?itemId=shared&code=${code}`,bob)).json()).status,'playing','Partners can see confirmed playback of their chosen film');
- assert.equal((await(await call('playback?itemId=shared&code=invalid',bob)).json()).status,'idle');
+ assert.equal((await(await call('playback?itemId=shared&code=invalid',bob)).json()).status,'stopped');
  // Stopping early must not trigger a rating prompt.
  playing=false;await delay(1100);
  await call('playback?itemId=shared',alice);
@@ -125,6 +125,19 @@ try{
  await call('rate',bob,{id:'shared',value:null});
  await call('reviews/dismiss',bob,{itemId:'shared'});
  position=0;
+ // The phone can miss the final position; a fresh not-played -> played transition recovers the review.
+ await call('playback/start',alice,{itemId:'shared',sessionId:'tv-alice',code});
+ playing=true;await delay(1100);await call('playback?itemId=shared',alice);
+ playing=false;serverPlayed=true;await delay(1100);
+ assert.equal((await(await call('reviews',alice)).json()).movies[0].id,'shared','Fresh Jellyfin completion recovers missing position reports');
+ assert.equal((await(await call('reviews',bob)).json()).movies[0].id,'shared','The consenting movie-night partner also receives a private review');
+ await call('reviews/dismiss',bob,{itemId:'shared'});
+ assert.equal((await(await call('playback?itemId=shared',alice)).json()).status,'stopped','Finished playback must not return to never-started status');
+ await call('reviews/dismiss',alice,{itemId:'shared'});
+ // A film watched before this attempt is not proof that this new attempt completed.
+ await call('playback/start',alice,{itemId:'shared',sessionId:'tv-alice'});
+ assert.deepEqual((await(await call('reviews',alice)).json()).movies,[]);
+ serverPlayed=false;
 
 
  view=await(await call(`rooms/${code}`,alice)).json();assert.equal(view.selected.id,'shared');

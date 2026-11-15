@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {createAsyncCache} from './cache';
 import {jelly} from './jellyfin';
-export type PlaybackSession={Id:string;DeviceName?:string;Client?:string;SupportsRemoteControl?:boolean;IsActive?:boolean;NowPlayingItem?:{Id?:string;Name?:string};PlayState?:{IsPaused?:boolean;PositionTicks?:number};};
+export type PlaybackSession={Id:string;DeviceName?:string;Client?:string;SupportsRemoteControl?:boolean;IsActive?:boolean;NowPlayingItem?:{Id?:string;Name?:string;RunTimeTicks?:number};PlayState?:{IsPaused?:boolean;PositionTicks?:number};};
 export function controllable(sessions:PlaybackSession[]){return sessions.filter(s=>s.Id&&s.SupportsRemoteControl===true&&s.IsActive!==false&&s.Client!=='MovieMate');}
 const sessionCache=createAsyncCache<PlaybackSession[]>(1000,48);
 export async function playbackSessions(userId:string,token:string,fresh=false):Promise<PlaybackSession[]>{
