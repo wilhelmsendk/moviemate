@@ -7,3 +7,5 @@ export type Rating = { item_id: string; value: number };
 export type Pick = Movie & { score: number; reason: string; rated?: number };
 
 export type InboxRecommendation={id:string;sender:string;note:string;created:string;read_at:string|null;movie:Movie};
+
+export type ExternalTaste={movie:Movie;value:number|null;watched:boolean};

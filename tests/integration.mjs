@@ -7,7 +7,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 if(!process.env.TEST_DATABASE_URL)throw Error('Set TEST_DATABASE_URL to an isolated test database');
 const film=(Id,Name)=>({Id,Name,Type:'Movie',ProductionYear:2020,RunTimeTicks:60000000000,Genres:['Comedy'],People:[],UserData:{Played:false},ImageTags:{}});
 const catalogs={alice:[film('shared','Shared'),film('alice-only','Alice private'),film('alice-liked','Liked')],bob:[film('shared','Shared'),film('bob-only','Bob private')],charlie:[]};
-let destination,playing=false,paused=false,playCommands=0,position=0,holdLibrary=false,releaseLibrary,serverPlayed=false;
+let destination,playing=false,paused=false,playCommands=0,position=0,holdLibrary=false,releaseLibrary,serverPlayed=false,tvSessionVersion=1;
 const libraryGate=new Promise(resolve=>{releaseLibrary=resolve;});
 const devices=new Map(),validTokens=new Set(),libraryReads=new Map();
 const fake=createServer(async(req,res)=>{
@@ -24,7 +24,7 @@ const fake=createServer(async(req,res)=>{
  if(!catalogs[user]||!validTokens.has(user)){res.writeHead(401);return res.end('{}');}
  if(url.pathname==='/Sessions'){
   assert.equal(url.searchParams.get('controllableByUserId'),user);
-  return res.end(JSON.stringify([{Id:`tv-${user}`,DeviceName:`${user} TV`,Client:'Moonfin',SupportsRemoteControl:true,NowPlayingItem:playing&&user==='alice'?{Id:'shared'}:null,PlayState:{IsPaused:paused,PositionTicks:position}}]));
+  return res.end(JSON.stringify([{Id:tvSessionVersion===1?`tv-${user}`:`tv-${user}-new`,DeviceId:`device-${user}`,UserId:user,UserName:user,DeviceName:`${user} TV`,Client:'Moonfin',SupportsRemoteControl:true,NowPlayingItem:playing&&user==='alice'?{Id:'shared'}:null,PlayState:{IsPaused:paused,PositionTicks:position}}]));
  }
  if(url.pathname.startsWith('/Sessions/')&&req.method==='POST'){
   assert.equal(url.pathname,`/Sessions/tv-${user}/Playing`);assert.equal(url.searchParams.get('playCommand'),'PlayNow');assert.equal(url.searchParams.get('itemIds'),'shared');playCommands++;res.writeHead(204);return res.end();
@@ -52,6 +52,18 @@ try{
  assert.equal((await call('login',null,{username:'alice',password:'test-password'},'http://evil.invalid')).status,403);
  assert.equal((await call('login',null,{username:'alice',password:'wrong'})).status,401);
  const alice=await login('alice'),bob=await login('bob'),charlie=await login('charlie');
+ const externalPreview=await(await call('import/preview',alice,{csv:'Const,Your Rating,Title,Year,Genres,Directors\ntt999999,10,Outside Library,2000,Comedy,Jane Director'})).json();
+ assert.equal(externalPreview.rows[0].externalId,'imdb:tt999999');
+ assert.equal((await call('import/commit',bob,{previewId:externalPreview.previewId,rows:[{rowKey:externalPreview.rows[0].rowKey}]})).status,400,'Preview ownership must be enforced');
+ assert.equal((await call('import/resolve',bob,{previewId:externalPreview.previewId,rowKey:externalPreview.rows[0].rowKey})).status,400);
+ assert.equal((await call('import/commit',alice,{rows:[{externalId:'imdb:forged',metadata:{},value:3,watched:true}]})).status,400,'Unprepared external metadata cannot be trusted');
+ assert.equal((await call('import/commit',alice,{previewId:externalPreview.previewId,rows:[{rowKey:externalPreview.rows[0].rowKey,value:-2,metadata:{title:'forged'}}]})).status,200);
+ const externalDb=new Client({connectionString:process.env.TEST_DATABASE_URL});await externalDb.connect();
+ try{const row=await externalDb.query("SELECT value,movie->>'title' AS title FROM external_tastes WHERE user_id='alice'");assert.equal(row.rows[0].value,3);assert.equal(row.rows[0].title,'Outside Library');}finally{await externalDb.end();}
+ assert.equal((await(await call('import/status',alice)).json()).externalCount,1);assert.equal((await(await call('import/status',bob)).json()).externalCount,0);
+ assert.ok((await(await call('recommendations',alice)).json()).movies.every(m=>!m.id.startsWith('external:')));
+ assert.equal((await call('import/commit',alice,{previewId:externalPreview.previewId,rows:[{rowKey:'row:0'}]})).status,400,'A committed preview cannot be replayed');
+
  assert.equal((await call('preferences',alice,{language:'en'})).status,200);
  assert.equal((await(await call('me',alice)).json()).language,'en');
  assert.equal((await call('preferences',alice,{language:'de'})).status,400);
@@ -63,6 +75,8 @@ try{
  assert.equal((await(await call('playback?itemId=shared',alice)).json()).status,'playing');
  paused=true;await delay(1100);assert.equal((await(await call('playback?itemId=shared',alice)).json()).status,'paused');paused=false;
  assert.equal((await call('playback?itemId=alice-only',bob)).status,403);
+ assert.equal((await(await call('playback?itemId=shared',alice)).json()).preferredId,'tv-alice');
+ assert.equal((await(await call('playback?itemId=shared',bob)).json()).hasPreferred,false,'Device preference is private to the user');
  assert.equal(devices.size,3,'Each user must authenticate as an independent Jellyfin device');
  assert.equal((await (await call('library',alice)).json()).movies.length,3);
  assert.deepEqual((await(await call('library/facets/danish-audio',alice)).json()).ids,['shared']);
@@ -233,6 +247,10 @@ try{
  const fastPicks=await Promise.race([call('recommendations',alice),delay(1500).then(()=>null)]);
  assert.ok(fastPicks,'Recommendations must reuse the same stale snapshot without waiting');assert.equal(fastPicks.status,200);
  releaseLibrary();holdLibrary=false;
+ tvSessionVersion=2;await delay(1100);
+ assert.equal((await(await call('playback?itemId=shared',alice)).json()).preferredId,'tv-alice-new','Restore stable TV identity after session renewal');
+ assert.equal((await call('playback/preference',alice,{})).status,200);
+ assert.equal((await(await call('playback?itemId=shared',alice)).json()).hasPreferred,false);
  assert.equal((await call('logout',alice,{})).status,200);
  assert.equal((await call('me',alice)).status,401);
  console.log('PASS: selected home film, expired-room finish, stale/unauthorized finish rejection, persistent library across restart, mutual film selection and reset, opt-in sharing, recipient access, private inbox, film details, per-session metadata reuse, independent Jellyfin sessions, login, CSRF, authorization, persistent ratings, isolation, room consent, intersection, snooze, undo and logout');

@@ -7,6 +7,17 @@ export async function ready() {
     CREATE TABLE IF NOT EXISTS profiles (id text PRIMARY KEY, name text NOT NULL);
     ALTER TABLE profiles ADD COLUMN IF NOT EXISTS receive_recommendations boolean NOT NULL DEFAULT false;
     ALTER TABLE profiles ADD COLUMN IF NOT EXISTS language text CHECK(language IN ('da','en'));
+    ALTER TABLE profiles ADD COLUMN IF NOT EXISTS preferred_device jsonb;
+    CREATE TABLE IF NOT EXISTS external_tastes (
+      user_id text NOT NULL REFERENCES profiles(id), external_id text NOT NULL, movie jsonb NOT NULL,
+      value integer CHECK(value IN(-2,1,3)), watched boolean NOT NULL, updated timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(user_id,external_id)
+    );
+    CREATE TABLE IF NOT EXISTS import_previews (
+      id text PRIMARY KEY, user_id text NOT NULL REFERENCES profiles(id), data jsonb NOT NULL, expires timestamptz NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS external_metadata (
+      external_id text PRIMARY KEY, movie jsonb NOT NULL, updated timestamptz NOT NULL DEFAULT now()
+    );
     CREATE TABLE IF NOT EXISTS recommendations (
       id text PRIMARY KEY, sender_id text NOT NULL REFERENCES profiles(id),
       recipient_id text NOT NULL REFERENCES profiles(id), item_id text NOT NULL,

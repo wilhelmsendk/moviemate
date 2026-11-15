@@ -20,3 +20,8 @@ test('matching uses provider IDs, then exact normalized title/year; ambiguity an
  assert.equal(rows[0].itemId,'a');assert.equal(rows[1].issue,'ambiguous');assert.equal(rows[2].itemId,'c');assert.equal(rows[3].issue,'unmatched');
  assert.equal(previewImport([importRows('Title,Date\nRemake,today\nRemake,today')[0],importRows('Title,Date\nRemake,today')[0]],library).length,1);
 });
+test('IMDb export metadata can warm taste without an online API and keeps a stable IMDb identity',()=>{
+ const rows=previewImport(importRows('Const,Your Rating,Title,Year,Genres,Directors\ntt999,10,Outside,2000,"Comedy, Romance",Jane Director'),[]);
+ assert.equal(rows[0].externalId,'imdb:tt999');assert.equal(rows[0].rowKey,'row:0');assert.deepEqual(rows[0].metadata?.genres,['Comedy','Romance']);assert.equal(rows[0].metadata?.people[0].name,'Jane Director');assert.equal(rows[0].value,3);
+ assert.equal(previewImport(importRows('Title,Date\nOutside,today'),[])[0].externalId,undefined,'A title without metadata is not an invented taste vector');
+});

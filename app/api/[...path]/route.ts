@@ -1,7 +1,8 @@
+import {prepareImport,storedPreview,resolveImport} from '@/lib/external-import';
+import {tmdbConfigured} from '@/lib/tmdb';
 import {reconcileReviews,syncSharedReviews,closeReviewedNights} from '@/lib/reviews';
 import {libraryFacet} from '@/lib/library-facets';
-import {importRows,previewImport} from '@/lib/import-history';
-import {playbackSessions,playbackStatus} from '@/lib/playback';
+import {playbackSessions,playbackStatus,deviceIdentity,preferredSession,deviceLabel} from '@/lib/playback';
 import {resolveLanguage,translate} from '@/lib/i18n';
 import { randomBytes, createHash } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
@@ -26,17 +27,18 @@ async function body(req:NextRequest,limit=12000) {
 async function session(req:NextRequest) {
   const sid = req.cookies.get('mm_session')?.value;
   if (!sid) throw new HttpError(401,'Log ind for at fortsætte');
-  const result = await pool.query('SELECT s.*,p.name,p.receive_recommendations,p.language FROM sessions s JOIN profiles p ON p.id=s.user_id WHERE hash=$1 AND expires>now()',[hash(sid)]);
+  const result = await pool.query('SELECT s.*,p.name,p.receive_recommendations,p.language,p.preferred_device FROM sessions s JOIN profiles p ON p.id=s.user_id WHERE hash=$1 AND expires>now()',[hash(sid)]);
   if (!result.rows[0]) throw new HttpError(401,'Din session er udløbet. Log ind igen.');
-  return result.rows[0] as {hash:string;user_id:string;token:string;name:string;receive_recommendations:boolean;language:'da'|'en'|null};
+  return result.rows[0] as {hash:string;user_id:string;token:string;name:string;receive_recommendations:boolean;language:'da'|'en'|null;preferred_device:import('@/lib/playback').PreferredDevice|null};
 }
 async function state(userId:string) {
-  const [r,d,h] = await Promise.all([
+  const [r,d,h,e] = await Promise.all([
     pool.query<Rating>('SELECT item_id,value FROM ratings WHERE user_id=$1',[userId]),
     pool.query('SELECT item_id FROM dismissals WHERE user_id=$1 AND expires>now()',[userId]),
-    pool.query('SELECT item_id FROM imported_history WHERE user_id=$1',[userId])
+    pool.query('SELECT item_id FROM imported_history WHERE user_id=$1',[userId]),
+    pool.query('SELECT movie,value,watched FROM external_tastes WHERE user_id=$1 ORDER BY updated DESC,external_id ASC LIMIT 500',[userId])
   ]);
-  return {history:h.rows.map(x=>x.item_id) as string[],ratings:r.rows,excluded:d.rows.map(x=>x.item_id)};
+  return {external:e.rows as import('@/lib/types').ExternalTaste[],history:h.rows.map(x=>x.item_id) as string[],ratings:r.rows,excluded:d.rows.map(x=>x.item_id)};
 }
 async function handle(req:NextRequest) {
   const started=performance.now();
@@ -100,7 +102,10 @@ async function handle(req:NextRequest) {
       }else await pool.query('UPDATE watch_reviews SET pending=true WHERE user_id=$1 AND item_id=$2 AND progress>=0.85 AND dismissed=false',[s.user_id,itemId]);
       if(code&&status.status==='idle')await syncSharedReviews(s.user_id);
       const review=await pool.query('SELECT (confirmed OR (pending AND progress>=0.85)) AS confirmed,pending FROM watch_reviews WHERE user_id=$1 AND item_id=$2',[s.user_id,itemId]);
-      return json({...status,...(status.status==='idle'&&review.rows[0]?.confirmed?{status:'stopped'}:{}),reviewPending:!!review.rows[0]?.pending,targets:mine.map(d=>({id:d.Id,name:d.DeviceName||d.Client||'Jellyfin'}))});
+      return json({...status,...(status.status==='idle'&&review.rows[0]?.confirmed?{status:'stopped'}:{}),reviewPending:!!review.rows[0]?.pending,preferredId:preferredSession(mine,s.preferred_device),hasPreferred:!!s.preferred_device,targets:mine.map(d=>({id:d.Id,name:deviceLabel(d)}))});
+    }
+    if(path==='playback/preference'&&req.method==='POST'){
+      await pool.query('UPDATE profiles SET preferred_device=NULL WHERE id=$1',[s.user_id]);return json({ok:true});
     }
     if(path==='playback/start'&&req.method==='POST'){
       const b=await body(req);
@@ -109,6 +114,7 @@ async function handle(req:NextRequest) {
       if(movie.Type!=='Movie')throw new HttpError(403,'Filmen er ikke tilgængelig for dig');
       const targets=await playbackSessions(s.user_id,s.token,true);
       if(!targets.some(d=>d.Id===b.sessionId))throw new HttpError(403,'Enheden er ikke tilgængelig for fjernstyring');
+      const selectedDevice=targets.find(d=>d.Id===b.sessionId)!;
       const participants=[{id:s.user_id,played:!!movie.UserData?.Played}];
       {
         const room=await pool.query('SELECT CASE WHEN host_id=$1 THEN guest_id ELSE host_id END AS partner FROM rooms WHERE selected_item_id=$2 AND (host_id=$1 OR guest_id=$1) AND ($3::text IS NULL OR code=$3) ORDER BY selected_at DESC LIMIT 1',[s.user_id,b.itemId,typeof b.code==='string'?b.code:null]);
@@ -120,6 +126,7 @@ async function handle(req:NextRequest) {
       }
       await jelly(`/Sessions/${encodeURIComponent(b.sessionId)}/Playing?${new URLSearchParams({playCommand:'PlayNow',itemIds:b.itemId,startPositionTicks:'0'})}`,s.token,{method:'POST'});
       for(const participant of participants)await pool.query('INSERT INTO watch_reviews(user_id,item_id,progress,play_owner,session_id,baseline_played) VALUES($1,$2,0,$3,$4,$5) ON CONFLICT(user_id,item_id) DO UPDATE SET progress=0,pending=false,dismissed=false,confirmed=false,play_owner=excluded.play_owner,session_id=excluded.session_id,baseline_played=excluded.baseline_played,last_seen=now()',[participant.id,b.itemId,s.user_id,b.sessionId,participant.played]);
+      await pool.query('UPDATE profiles SET preferred_device=$1 WHERE id=$2',[JSON.stringify(deviceIdentity(selectedDevice)),s.user_id]);
       return json({accepted:true});
     }
     if(path==='reviews'&&req.method==='GET'){
@@ -133,22 +140,42 @@ async function handle(req:NextRequest) {
       const b=await body(req);if(typeof b.itemId!=='string')throw new HttpError(400,'Ugyldig film');
       await pool.query('UPDATE watch_reviews SET dismissed=true,pending=false WHERE user_id=$1 AND item_id=$2',[s.user_id,b.itemId]);return json({ok:true});
     }
+    if(path==='import/status'&&req.method==='GET'){
+      const stats=await pool.query('SELECT count(*)::int AS count FROM external_tastes WHERE user_id=$1',[s.user_id]);return json({tmdbConfigured:tmdbConfigured(),externalCount:stats.rows[0].count});
+    }
     if(path==='import/preview'&&req.method==='POST'){
       const b=await body(req,2100000);if(typeof b.csv!=='string')throw new HttpError(400,'Ugyldig CSV-fil');
-      let rows;try{rows=importRows(b.csv);}catch(e){throw new HttpError(400,e instanceof Error?e.message:'Ugyldig CSV-fil');}
-      return json({rows:previewImport(rows,await library(s.user_id,s.token))});
+      try{return json({...await prepareImport(s.user_id,b.csv,await library(s.user_id,s.token)),tmdbConfigured:tmdbConfigured()});}catch(e){throw new HttpError(400,e instanceof Error?e.message:'Ugyldig CSV-fil');}
+    }
+    if(path==='import/resolve'&&req.method==='POST'){
+      const b=await body(req);if(typeof b.previewId!=='string'||typeof b.rowKey!=='string'||(b.selectedId!==undefined&&!Number.isSafeInteger(b.selectedId)))throw new HttpError(400,'Ugyldige data');
+      try{return json({row:await resolveImport(s.user_id,b.previewId,b.rowKey,b.selectedId)});}catch(e){throw new HttpError(400,e instanceof Error?e.message:'Ugyldige data');}
     }
     if(path==='import/commit'&&req.method==='POST'){
       const b=await body(req,1000000);
       if(!Array.isArray(b.rows)||!b.rows.length||b.rows.length>10000)throw new HttpError(400,'Ugyldige data');
+      let rows=b.rows;
+      if(b.previewId!==undefined){
+        if(typeof b.previewId!=='string')throw new HttpError(400,'Ugyldige data');
+        let prepared;try{prepared=await storedPreview(s.user_id,b.previewId);}catch(e){throw new HttpError(400,e instanceof Error?e.message:'Ugyldige data');}
+        const keys=new Set(rows.map((r:any)=>r?.rowKey));if(keys.size!==rows.length)throw new HttpError(400,'Ugyldige data');
+        rows=prepared.filter(r=>keys.has(r.rowKey));if(rows.length!==keys.size)throw new HttpError(400,'Ugyldige data');
+      }
       const movies=await library(s.user_id,s.token),allowed=new Set(movies.map(m=>m.id)),seen=new Set();
-      for(const row of b.rows){if(!row||typeof row.itemId!=='string'||!allowed.has(row.itemId)||seen.has(row.itemId)||!(row.value===null||[-2,1,3].includes(row.value))||typeof row.watched!=='boolean')throw new HttpError(400,'Ugyldige data');seen.add(row.itemId);}
-      const client=await pool.connect();let saved=0;
-      try{await client.query('BEGIN');for(const row of b.rows){
-        if(row.watched)await client.query('INSERT INTO imported_history(user_id,item_id) VALUES($1,$2) ON CONFLICT DO NOTHING',[s.user_id,row.itemId]);
-        if(row.value!==null){const r=await client.query('INSERT INTO ratings(user_id,item_id,value) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING item_id',[s.user_id,row.itemId,row.value]);saved+=r.rowCount||0;}
-      }await client.query('COMMIT');}catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
-      return json({ok:true,ratingsSaved:saved,historySaved:b.rows.filter((r:any)=>r.watched).length});
+      for(const row of rows){const key=row?.itemId||row?.externalId;
+        if(!row||!key||seen.has(key)||!(row.value===null||[-2,1,3].includes(row.value))||typeof row.watched!=='boolean')throw new HttpError(400,'Ugyldige data');
+        if(row.itemId?!allowed.has(row.itemId):!(b.previewId&&row.externalId&&row.metadata))throw new HttpError(400,'Ugyldige data');seen.add(key);
+      }
+      const client=await pool.connect();let saved=0,externalSaved=0;
+      try{await client.query('BEGIN');for(const row of rows){
+        if(row.itemId){
+          if(row.watched)await client.query('INSERT INTO imported_history(user_id,item_id) VALUES($1,$2) ON CONFLICT DO NOTHING',[s.user_id,row.itemId]);
+          if(row.value!==null){const r=await client.query('INSERT INTO ratings(user_id,item_id,value) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING item_id',[s.user_id,row.itemId,row.value]);saved+=r.rowCount||0;}
+        }else{const r=await client.query('INSERT INTO external_tastes(user_id,external_id,movie,value,watched) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING RETURNING external_id',[s.user_id,row.externalId,JSON.stringify(row.metadata),row.value,row.watched]);externalSaved+=r.rowCount||0;}
+      }
+      if(b.previewId)await client.query('DELETE FROM import_previews WHERE id=$1 AND user_id=$2',[b.previewId,s.user_id]);
+      await client.query('COMMIT');}catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+      return json({ok:true,ratingsSaved:saved,externalSaved,historySaved:rows.filter((r:any)=>r.watched).length});
     }
     if (path==='logout' && req.method==='POST') {
       await pool.query('DELETE FROM sessions WHERE hash=$1',[s.hash]);
@@ -244,7 +271,7 @@ async function handle(req:NextRequest) {
     if (path==='recommendations' && req.method==='GET') {
       const [movies,own]=await Promise.all([library(s.user_id,s.token),state(s.user_id)]);
       const max=Number(req.nextUrl.searchParams.get('minutes')) || 0;
-      return json({movies:recommend(movies.map(m=>({...m,played:m.played||own.history.includes(m.id)})),own.ratings,max,own.excluded),personalized:own.ratings.some(r=>r.value>0)||movies.some(m=>m.favorite)});
+      return json({movies:recommend(movies.map(m=>({...m,played:m.played||own.history.includes(m.id)})),own.ratings,max,own.excluded,12,own.external),personalized:own.external.length>0||own.ratings.some(r=>r.value>0)||movies.some(m=>m.favorite)});
     }
     if ((path==='rate'||path==='dismiss') && req.method==='POST') {
       const b=await body(req);
@@ -334,7 +361,7 @@ async function handle(req:NextRequest) {
       }),state(s.user_id),state(otherId)]);
       // Both users must have access; watched/rated/dismissed titles are excluded separately.
       const key=hash(JSON.stringify([code,s.user_id,myMovies.map(m=>[m.id,m.played,m.favorite]),theirMovies.map(m=>[m.id,m.played,m.favorite]),myState,theirState]));
-      const movies=await pairCache.get(key,async()=>pairRank(recommend(myMovies.map(m=>({...m,played:m.played||myState.history.includes(m.id)})),myState.ratings,0,myState.excluded,myMovies.length),recommend(theirMovies.map(m=>({...m,played:m.played||theirState.history.includes(m.id)})),theirState.ratings,0,theirState.excluded,theirMovies.length)).slice(0,5));
+      const movies=await pairCache.get(key,async()=>pairRank(recommend(myMovies.map(m=>({...m,played:m.played||myState.history.includes(m.id)})),myState.ratings,0,myState.excluded,myMovies.length,myState.external),recommend(theirMovies.map(m=>({...m,played:m.played||theirState.history.includes(m.id)})),theirState.ratings,0,theirState.excluded,theirMovies.length,theirState.external)).slice(0,5));
       const voted=await pool.query('SELECT item_id,user_id FROM room_votes WHERE code=$1',[code]);
       const votes=[...new Set<string>(voted.rows.map(v=>v.item_id))].map(itemId=>({itemId,mine:voted.rows.some(v=>v.item_id===itemId&&v.user_id===s.user_id),partner:voted.rows.some(v=>v.item_id===itemId&&v.user_id===otherId)}));
       const selected=room.selected_item_id?myMovies.find(m=>m.id===room.selected_item_id&&theirMovies.some(t=>t.id===m.id))||null:null;

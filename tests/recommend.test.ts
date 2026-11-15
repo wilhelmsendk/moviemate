@@ -43,3 +43,22 @@ test('two full-sized libraries can be ranked together without blocking the serve
  assert.equal(result.length,400);
  assert.ok(performance.now()-started<2500,'Pair ranking blocked for more than 2.5 seconds');
 });
+test('external likes and dislikes influence local picks, match people by name, and never become playback candidates',()=>{
+ const ext=movie('external:imdb:tt999','Science Fiction',{title:'Arrival',year:2016,people:[{id:'tmdb-person',name:'Denis Villeneuve',type:'Director'}]});
+ const library=[movie('blade','Science Fiction',{people:[{id:'jellyfin-person',name:'Denis Villeneuve',type:'Director'}]}),movie('other','Romance')];
+ const picks=recommend(library,[],0,[],12,[{movie:ext,value:3,watched:true}]);
+ assert.equal(picks[0].id,'blade');assert.equal(picks[0].reason,'Fordi du kunne lide Arrival');assert.ok(picks.every(p=>library.some(m=>m.id===p.id)));
+ const disliked=recommend(library,[],0,[],12,[{movie:ext,value:-2,watched:true}]);assert.equal(disliked[0].id,'other');
+});
+test('external watch history stays a weak signal and excludes the same film if it later joins the library',()=>{
+ const external=movie('external:imdb:tt123','Comedy',{title:'Known',providerIds:{Imdb:'tt123'}});
+ const local=movie('known','Comedy',{title:'Known',providerIds:{Imdb:'tt123'}});
+ const picks=recommend([local,movie('next','Comedy')],[],0,[],12,[{movie:external,value:null,watched:true}]);
+ assert.deepEqual(picks.map(p=>p.id),['next']);assert.match(picks[0].reason,/Med afsæt i din historik/);
+ const explicit=recommend([local,movie('next','Comedy'),movie('horror','Horror')],[{item_id:'known',value:-2}],0,[],12,[{movie:external,value:3,watched:true}]);assert.equal(explicit[0].id,'horror');
+});
+test('500 external tastes and 500 library films remain practical without an external API during ranking',()=>{
+ const library=Array.from({length:500},(_,i)=>movie(`local-${i}`,i%2?'Comedy':'Drama'));
+ const taste=Array.from({length:500},(_,i)=>({movie:movie(`external-${i}`,i%3?'Comedy':'Drama'),value:i%4===0?-2:3,watched:true}));
+ const started=performance.now();assert.equal(recommend(library,[],0,[],12,taste).length,12);assert.ok(performance.now()-started<2000);
+});
