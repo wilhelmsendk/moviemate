@@ -36,7 +36,7 @@ const fake=createServer(async(req,res)=>{
  }
  const id=url.pathname.split('/').at(-1),item=catalogs[user].find(m=>m.Id===id);
  if(!item){res.writeHead(404);return res.end('{}');}
- return res.end(JSON.stringify(item.Id==='shared'?{...item,UserData:{...item.UserData,Played:serverPlayed}}:item));
+ return res.end(JSON.stringify(item.Id==='shared'?{...item,UserData:{...item.UserData,Played:serverPlayed&&user==='alice'}}:item));
 });
 await new Promise(r=>fake.listen(0,'127.0.0.1',r));
 destination=`http://127.0.0.1:${fake.address().port}`;
@@ -130,8 +130,18 @@ try{
  playing=true;await delay(1100);await call('playback?itemId=shared',alice);
  playing=false;serverPlayed=true;await delay(1100);
  assert.equal((await(await call('reviews',alice)).json()).movies[0].id,'shared','Fresh Jellyfin completion recovers missing position reports');
- assert.equal((await(await call('reviews',bob)).json()).movies[0].id,'shared','The consenting movie-night partner also receives a private review');
+ // Regression: partner was offline/using an older release and has no tracking row; TV only marks Alice watched.
+ await call('rate',alice,{id:'shared',value:1});
+ const repairDb=new Client({connectionString:process.env.TEST_DATABASE_URL});await repairDb.connect();
+ try{await repairDb.query("DELETE FROM watch_reviews WHERE user_id='bob' AND item_id='shared'");}finally{await repairDb.end();}
+ assert.equal((await(await call('reviews',bob)).json()).movies[0].id,'shared','Backfill the shared finish even when only Alice is marked watched and has already rated');
+ assert.equal((await(await call(`playback?itemId=shared&code=${code}`,bob)).json()).status,'stopped');
+ assert.deepEqual((await(await call('reviews',charlie)).json()).movies,[],'Nonparticipants never receive the shared review');
+ assert.equal((await(await call('library',bob)).json()).movies.find(m=>m.id==='shared').rated,undefined,'Partner ratings remain private');
+ await call('rate',alice,{id:'shared',value:null});
+
  await call('reviews/dismiss',bob,{itemId:'shared'});
+ assert.deepEqual((await(await call('reviews',bob)).json()).movies,[],'A skipped review must not be revived by shared synchronization');
  assert.equal((await(await call('playback?itemId=shared',alice)).json()).status,'stopped','Finished playback must not return to never-started status');
  await call('reviews/dismiss',alice,{itemId:'shared'});
  // A film watched before this attempt is not proof that this new attempt completed.
